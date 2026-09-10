@@ -17,6 +17,7 @@ import (
 	"ehang.io/nps/lib/config"
 	"ehang.io/nps/lib/conn"
 	"ehang.io/nps/lib/crypt"
+	"ehang.io/nps/lib/selfupdate"
 )
 
 type TRPClient struct {
@@ -70,6 +71,10 @@ retry:
 		goto retry
 	}
 	logs.Info("Successful connection with server %s", s.svrAddr)
+	// Reaching this point is what makes a freshly installed binary
+	// trustworthy: it started, it speaks the protocol, and the server
+	// accepted it. If an update is being verified, this clears it.
+	selfupdate.Confirm()
 	//monitor the connection
 	go s.ping()
 	s.signal = c
@@ -113,6 +118,21 @@ func (s *TRPClient) handleMain() {
 				}
 				go s.newUdpConn(localAddr, string(lAddr), string(pwd))
 			}
+		case common.WORK_UPDATE:
+			// The tag is always sent, empty meaning "the latest release", so
+			// that the control stream stays in sync whether or not this
+			// client knows what to do with the flag.
+			tag, err := s.signal.GetShortLenContent()
+			if err != nil {
+				logs.Warn("update: cannot read the requested tag,", err)
+				return
+			}
+			logs.Info("update: the server asked this client to update to %q", string(tag))
+			go func(tag string) {
+				if err := selfupdate.Apply(tag); err != nil {
+					logs.Error("update:", err)
+				}
+			}(string(tag))
 		}
 	}
 	s.Close()

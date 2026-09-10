@@ -209,6 +209,32 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 	return
 }
 
+// SendUpdate asks a connected client to replace its own binary. Only the
+// request and the tag travel down the control connection: the node fetches
+// the release from GitHub itself, so the server never has to hold artifacts
+// for every platform it serves, and a twelve megabyte binary never competes
+// for bandwidth with the traffic the tunnel exists to carry.
+//
+// The reply comes as a reconnect. A node that comes back with a new Version
+// updated successfully; one that comes back with the old Version rolled
+// itself back; one that does not come back needs a look.
+func (s *Bridge) SendUpdate(id int, tag string) error {
+	v, ok := s.Client.Load(id)
+	if !ok {
+		return errors.New("the client is not connected")
+	}
+	signal := v.(*Client).signal
+	if signal == nil {
+		return errors.New("the client has no control connection")
+	}
+	if _, err := signal.Write([]byte(common.WORK_UPDATE)); err != nil {
+		return err
+	}
+	// The tag is always written, empty meaning the latest release, so the
+	// control stream stays framed even for a client too old to know the flag.
+	return signal.WriteLenContent([]byte(tag))
+}
+
 func (s *Bridge) DelClient(id int) {
 	if v, ok := s.Client.Load(id); ok {
 		if v.(*Client).signal != nil {

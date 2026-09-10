@@ -162,6 +162,23 @@ func (s *ClientController) ChangeStatus() {
 	s.AjaxErr("modified fail")
 }
 
+//推送更新到某个客户端
+//
+//一次只推一个，没有"推给所有节点"：全网同时更新意味着一个坏版本能同时打死
+//所有节点，而那时候连补救的通道都一起没了。要批量就一台一台点，或者在外面
+//套一个带间隔的脚本。
+func (s *ClientController) PushUpdate() {
+	id := s.GetIntNoErr("id")
+	if _, err := file.GetDb().GetClient(id); err != nil {
+		s.AjaxErr("client not found")
+	}
+	//空 tag 表示最新的 release
+	if err := server.PushClientUpdate(id, s.GetString("tag")); err != nil {
+		s.AjaxErr("push update fail: " + err.Error())
+	}
+	s.AjaxOk("update requested, watch the client version column for the result")
+}
+
 //删除客户端
 func (s *ClientController) Del() {
 	id := s.GetIntNoErr("id")

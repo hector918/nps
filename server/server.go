@@ -349,6 +349,11 @@ func DelClientConnect(clientId int) {
 	Bridge.DelClient(clientId)
 }
 
+//ask the client to update its own binary, empty tag means the latest release
+func PushClientUpdate(clientId int, tag string) error {
+	return Bridge.SendUpdate(clientId, tag)
+}
+
 func GetDashboardData() map[string]interface{} {
 	data := make(map[string]interface{})
 	data["version"] = version.VERSION

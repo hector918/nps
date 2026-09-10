@@ -6,6 +6,7 @@ import (
 	"ehang.io/nps/lib/config"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/install"
+	"ehang.io/nps/lib/selfupdate"
 	"ehang.io/nps/lib/version"
 	"flag"
 	"fmt"
@@ -229,6 +230,10 @@ func run() {
 		*verifyKey, _ = env["NPC_SERVER_VKEY"]
 	}
 	logs.Info("the version of client is %s, the core version of client is %s", version.VERSION, version.GetVersion())
+	// Arm the update watchdog only here, past the local-server branch above.
+	// That branch never connects to a server and so never confirms, and an
+	// unconfirmable start would roll a perfectly good binary back.
+	selfupdate.OnStart()
 	if *verifyKey != "" && *serverAddr != "" && *configPath == "" {
 		go func() {
 			for {
