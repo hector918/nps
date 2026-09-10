@@ -34,6 +34,8 @@ NPS is a lightweight, high-performance, powerful **intranet penetration** proxy 
 
 Download the corresponding system version, the server and client are separate.
 
+or : curl -fsSL https://raw.githubusercontent.com/hector918/nps/master/deploy/update.sh | sudo bash
+
 ### Server start
 
 After downloading the server compressed package, unzip it, and then enter the unzipped folder.
