@@ -460,7 +460,15 @@ func (d *bufDequeue) pushHead(val unsafe.Pointer) bool {
 		}
 	}
 	// The head slot is free, so we own it.
-	*slot = val
+	//
+	// Stored atomically because this write is the publication: popTail reads
+	// the same word with atomic.LoadPointer and treats a non-nil value as
+	// "this slot is ready". A plain store here races with that read on every
+	// push -- in the tunnel data path, not just under test. Go's poolDequeue,
+	// which this is adapted from, publishes through a separate typ word with
+	// an atomic store; dropping that word without making this one atomic left
+	// the publication unsynchronised.
+	atomic.StorePointer(slot, val)
 	return true
 }
 
