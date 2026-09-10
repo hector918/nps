@@ -83,7 +83,10 @@ if [[ $ROLLBACK == 1 ]]; then
 fi
 
 # ------------------------------------------------------------------ fetch ---
-WORK=$(mktemp -d)
+# Staged beside the target binary, not in /tmp: the smoke test below executes
+# it, and /tmp is mounted noexec on plenty of hardened hosts. It also keeps the
+# final move a rename on one filesystem.
+WORK=$(mktemp -d "$(dirname "$BIN")/.update.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 if [[ -n $LOCAL_FILE ]]; then
@@ -91,10 +94,13 @@ if [[ -n $LOCAL_FILE ]]; then
     cp "$LOCAL_FILE" "$WORK/staged"
     info "using local file $LOCAL_FILE"
 else
+    # These must be the GOARCH values build.release.sh labels its output with,
+    # not finer-grained ones: asking for linux_arm_v7 when the builder produced
+    # linux_arm just 404s.
     case "$(uname -m)" in
         x86_64)          ARCH=amd64 ;;
         aarch64|arm64)   ARCH=arm64 ;;
-        armv7l|armv6l)   ARCH=arm_v7 ;;
+        armv7l|armv6l)   ARCH=arm ;;
         i386|i686)       ARCH=386 ;;
         *)               die "unsupported architecture: $(uname -m)" ;;
     esac
@@ -181,7 +187,11 @@ while ((SECONDS < deadline)); do
             if [[ $ROLE == nps ]]; then
                 ss -tlnp 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
             else
+                # TCP for the usual bridge, UDP for a node whose bridge is
+                # kcp -- checking only TCP would roll back every healthy kcp
+                # node, every time.
                 ss -tnp state established 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
+                ss -unp 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
             fi
         fi
     fi

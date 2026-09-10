@@ -112,7 +112,14 @@ func main() {
 			flag.CommandLine.Parse(os.Args[2:])
 			client.RegisterLocalIp(*serverAddr, *verifyKey, *connType, *proxyUrl, *registerTime)
 		case "update":
-			install.UpdateNpc()
+			// Deliberately not install.UpdateNpc: that one downloads from
+			// upstream ehang-io, so running it on a patched node would
+			// quietly swap this build for the unmaintained 0.26.10 -- taking
+			// the mux spin fix with it -- and report a version that merely
+			// looks like a failed update.
+			if err := selfupdate.Apply(""); err != nil {
+				logs.Error("update:", err)
+			}
 			return
 		case "nat":
 			c := stun.NewClient()

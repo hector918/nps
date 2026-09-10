@@ -16,6 +16,7 @@ import (
 	"ehang.io/nps/lib/conn"
 	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
+	"ehang.io/nps/lib/selfupdate"
 	"ehang.io/nps/lib/version"
 	"ehang.io/nps/server/connection"
 	"ehang.io/nps/server/tool"
@@ -24,8 +25,15 @@ import (
 )
 
 type Client struct {
-	tunnel    *nps_mux.Mux
-	signal    *conn.Conn
+	tunnel *nps_mux.Mux
+	signal *conn.Conn
+	// signalMu serialises writes to signal. Messages on it are multi-part --
+	// a four byte flag followed by length-prefixed frames -- and there is
+	// more than one writer: the per-connection goroutine handling p2p, and
+	// the web handler pushing updates. Two interleaved sequences leave the
+	// client reading spliced flags and lengths, and its control channel
+	// stays broken until it reconnects.
+	signalMu  sync.Mutex
 	file      *nps_mux.Mux
 	Version   string
 	retryTime int // it will be add 1 when ping not ok until to 3 will close the client
@@ -219,20 +227,40 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 // updated successfully; one that comes back with the old Version rolled
 // itself back; one that does not come back needs a look.
 func (s *Bridge) SendUpdate(id int, tag string) error {
+	if !selfupdate.ValidTag(tag) {
+		return errors.New("that is not a valid release tag")
+	}
 	v, ok := s.Client.Load(id)
 	if !ok {
 		return errors.New("the client is not connected")
 	}
-	signal := v.(*Client).signal
-	if signal == nil {
+	c := v.(*Client)
+	if c.signal == nil {
 		return errors.New("the client has no control connection")
 	}
-	if _, err := signal.Write([]byte(common.WORK_UPDATE)); err != nil {
+	// A client that predates WORK_UPDATE has no default case in its control
+	// loop: it would read the tag's length prefix as the next flag and stay
+	// misaligned for the rest of the connection. Since a fleet is entirely
+	// old clients on the day this ships, refusing is the difference between
+	// "the button does nothing yet" and "the button breaks every node's
+	// control channel one at a time".
+	if !supportsUpdate(c.Version) {
+		return errors.New("this client is too old to accept a pushed update, update it in place first")
+	}
+
+	c.signalMu.Lock()
+	defer c.signalMu.Unlock()
+	if _, err := c.signal.Write([]byte(common.WORK_UPDATE)); err != nil {
 		return err
 	}
-	// The tag is always written, empty meaning the latest release, so the
-	// control stream stays framed even for a client too old to know the flag.
-	return signal.WriteLenContent([]byte(tag))
+	// The tag is always written, empty meaning the latest release.
+	return c.signal.WriteLenContent([]byte(tag))
+}
+
+// supportsUpdate reports whether a client's reported version is one of ours,
+// which is what the fork marker in version.VERSION is for.
+func supportsUpdate(clientVersion string) bool {
+	return strings.Contains(clientVersion, version.ForkMarker)
 }
 
 func (s *Bridge) DelClient(id int) {
@@ -311,15 +339,19 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			if v, ok := s.Client.Load(t.Client.Id); !ok {
 				return
 			} else {
-				//向密钥对应的客户端发送与服务端udp建立连接信息，地址，密钥
-				v.(*Client).signal.Write([]byte(common.NEW_UDP_CONN))
 				svrAddr := beego.AppConfig.String("p2p_ip") + ":" + beego.AppConfig.String("p2p_port")
 				if err != nil {
 					logs.Warn("get local udp addr error")
 					return
 				}
-				v.(*Client).signal.WriteLenContent([]byte(svrAddr))
-				v.(*Client).signal.WriteLenContent(b)
+				//向密钥对应的客户端发送与服务端udp建立连接信息，地址，密钥
+				//这三个写是一条消息，必须整体持锁：SendUpdate 也写同一个 signal
+				target := v.(*Client)
+				target.signalMu.Lock()
+				target.signal.Write([]byte(common.NEW_UDP_CONN))
+				target.signal.WriteLenContent([]byte(svrAddr))
+				target.signal.WriteLenContent(b)
+				target.signalMu.Unlock()
 				//向该请求者发送建立连接请求,服务器地址
 				c.WriteLenContent([]byte(svrAddr))
 			}

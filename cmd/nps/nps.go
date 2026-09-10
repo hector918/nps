@@ -144,7 +144,12 @@ func main() {
 			}
 			return
 		case "update":
-			install.UpdateNps()
+			// install.UpdateNps downloads from upstream ehang-io, which on
+			// this fork means silently replacing the server with the
+			// unmaintained 0.26.10. Updating a server also means the web
+			// assets that sit beside the binary, which no in-process path
+			// handles, so point at the script that does.
+			logs.Error("use deploy/update.sh on this host: `nps update` fetches upstream builds, not this fork's")
 			return
 		default:
 			logs.Error("command is not support")

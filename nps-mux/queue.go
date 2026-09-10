@@ -269,23 +269,32 @@ startPop:
 		}
 		goto startPop // wait finish, trying to Get the New status
 	}
-	// length is not zero, so try to pop
+	// The counter says data is queued. Normally the element is a few
+	// instructions away -- Push bumps the counter before it links the
+	// element -- so spin briefly for it.
+	//
+	// Nothing here touches the counter. An earlier version reset it on
+	// giving up, which underflowed it the moment the element it had
+	// discounted was finally popped: Len then reads as billions,
+	// receiveWindow.remainingSize clamps to zero for good, the window never
+	// acknowledges again and the peer blocks forever. Losing a core is bad;
+	// wedging the connection is worse.
 	for spin := 0; ; spin++ {
 		element = Self.TryPop()
 		if element != nil {
 			return
 		}
-		if spin > maxPopSpin {
-			// The counter says there is data but the chain never yields any:
-			// the two have drifted apart. Push bumps the counter before it
-			// links the element, and receiveWindow.release drains the same
-			// chain concurrently with Read, so this is reachable. Reset the
-			// counter and fall back to the normal wait path rather than
-			// spinning on a CPU forever.
-			atomic.StoreUint64(&Self.lengthWait, Self.chain.head.pack(0, 0))
-			goto startPop
+		if spin < maxPopSpin {
+			runtime.Gosched() // another goroutine is still pushing
+			continue
 		}
-		runtime.Gosched() // another goroutine is still pushing
+		// Past the fast spin the push is not merely late, so stop competing
+		// for the CPU and poll instead. If it never lands, give up and let
+		// the caller tear the stream down rather than block on it forever.
+		if spin > maxPopSpin+int(stallTimeout/stallPoll) {
+			return nil, errors.New("mux.queue: queued data never arrived, closing")
+		}
+		time.Sleep(stallPoll)
 	}
 }
 
@@ -399,6 +408,16 @@ const dequeueLimit = (1 << dequeueBits) / 4
 // every caller already has a path for a transiently empty queue.
 const maxPopSpin = 64
 
+// Vars, not consts, so tests can shorten them.
+var (
+	// stallPoll is how often a consumer rechecks a queue that claims to hold
+	// data it cannot get at, once the fast spin has not resolved it.
+	stallPoll = 2 * time.Millisecond
+	// stallTimeout is how long it keeps polling before declaring the stream
+	// broken. Long enough that no ordinary scheduling delay reaches it.
+	stallTimeout = 30 * time.Second
+)
+
 func (d *bufDequeue) unpack(ptrs uint64) (head, tail uint32) {
 	const mask = 1<<dequeueBits - 1
 	head = uint32((ptrs >> dequeueBits) & mask)
@@ -445,10 +464,28 @@ func (d *bufDequeue) pushHead(val unsafe.Pointer) bool {
 	return true
 }
 
+// popResult distinguishes the two ways a pop can come back without a value.
+// The difference matters to bufChain, which is allowed to drop a dequeue from
+// the chain when it is permanently empty but must not when a slot is merely
+// still being filled -- dropping it there would strand every element left in
+// it.
+type popResult uint8
+
+const (
+	popOK popResult = iota
+	// popEmpty means head has caught up with tail: nothing is in this
+	// dequeue and nothing is on its way in.
+	popEmpty
+	// popStalled means head is ahead of tail but the slot is not readable.
+	// Either a producer has claimed the slot and not yet stored to it, or
+	// head and tail have diverged for good. Either way the caller must
+	// treat the dequeue as still holding data.
+	popStalled
+)
+
 // popTail removes and returns the element at the tail of the queue.
-// It returns false if the queue is empty. It may be called by any
-// number of consumers.
-func (d *bufDequeue) popTail() (unsafe.Pointer, bool) {
+// It may be called by any number of consumers.
+func (d *bufDequeue) popTail() (unsafe.Pointer, popResult) {
 	var val unsafe.Pointer
 	var head, tail uint32
 	var spin int
@@ -457,7 +494,7 @@ func (d *bufDequeue) popTail() (unsafe.Pointer, bool) {
 		head, tail = d.unpack(ptrs)
 		if tail == head {
 			// Queue is empty.
-			return nil, false
+			return nil, popEmpty
 		}
 		slot := &d.vals[tail&uint32(len(d.vals)-1)]
 		val = atomic.LoadPointer(slot)
@@ -475,10 +512,11 @@ func (d *bufDequeue) popTail() (unsafe.Pointer, bool) {
 		// Maybe the value was taken by other goroutine or not push yet.
 		spin++
 		if spin > maxPopSpin {
-			// The slot stays empty while head != tail, so head/tail and the
-			// slot contents have diverged and no amount of retrying will fix
-			// it. Report the queue as empty instead of spinning forever.
-			return nil, false
+			// Stop burning the core. Crucially this is reported as stalled,
+			// not empty: the caller must not conclude the dequeue is
+			// finished with and drop it, because the elements behind this
+			// slot are still in it.
+			return nil, popStalled
 		}
 		runtime.Gosched()
 	}
@@ -488,7 +526,7 @@ func (d *bufDequeue) popTail() (unsafe.Pointer, bool) {
 	} else {
 		atomic.AddUint64(&d.headTail, ^uint64(math.MaxUint32-1))
 	}
-	return val, true
+	return val, popOK
 }
 
 // bufChain is a dynamically-sized version of bufDequeue.
@@ -593,8 +631,16 @@ func (c *bufChain) popTail() (unsafe.Pointer, bool) {
 		// safe to drop d from the chain.
 		d2 := loadPoolChainElt(&d.next)
 
-		if val, ok := d.popTail(); ok {
-			return val, ok
+		val, res := d.popTail()
+		if res == popOK {
+			return val, true
+		}
+		if res == popStalled {
+			// d is not finished with -- a slot in it is mid-write, or its
+			// indices have diverged. Report "nothing right now" and leave
+			// the chain alone. Falling through to the drop below would
+			// splice d out and take everything still queued in it with it.
+			return nil, false
 		}
 
 		if d2 == nil {

@@ -16,6 +16,17 @@ TAG=${1:-dev}
 OUT=${OUT:-dist}
 PLATFORMS=${PLATFORMS:-"linux/amd64 linux/arm64"}
 
+# The tag is stamped into VERSION, and the server decides whether a connected
+# client is new enough to accept a pushed update by looking for this marker in
+# the version it reported. A release tagged without it produces nodes the
+# server will refuse to push to, which is a confusing thing to discover later.
+FORK_MARKER=$(grep -oP 'ForkMarker = "\K[^"]+' lib/version/version.go)
+if [[ $TAG != dev && $TAG != *"$FORK_MARKER"* ]]; then
+    echo "ERROR: tag '$TAG' does not contain the fork marker '$FORK_MARKER'." >&2
+    echo "       Tag releases like v0.27.0${FORK_MARKER}1 so pushed updates keep working." >&2
+    exit 1
+fi
+
 # VERSION is only ever displayed and reported to the server, never compared,
 # so the tag can go in verbatim. GetVersion, which the server does compare
 # byte for byte, is deliberately left alone.

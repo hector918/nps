@@ -4,6 +4,7 @@ import (
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/rate"
+	"ehang.io/nps/lib/selfupdate"
 	"ehang.io/nps/server"
 	"github.com/astaxie/beego"
 )
@@ -168,12 +169,23 @@ func (s *ClientController) ChangeStatus() {
 //所有节点，而那时候连补救的通道都一起没了。要批量就一台一台点，或者在外面
 //套一个带间隔的脚本。
 func (s *ClientController) PushUpdate() {
+	//必须显式挡一道管理员。CheckUserAuth 对 client 控制器只硬拦 add，其余动作
+	//只要 id 等于自己的 clientId 就放行——租户账号因此能对自己的节点推送，
+	//而推送的终点是节点上 exec 一个二进制。这里沿用 Prepare 的判定口径。
+	if v := s.GetSession("isAdmin"); v != nil && !v.(bool) {
+		s.AjaxErr("only an administrator can push updates")
+	}
 	id := s.GetIntNoErr("id")
 	if _, err := file.GetDb().GetClient(id); err != nil {
 		s.AjaxErr("client not found")
 	}
-	//空 tag 表示最新的 release
-	if err := server.PushClientUpdate(id, s.GetString("tag")); err != nil {
+	//空 tag 表示最新的 release。tag 会被拼进下载 URL，所以这里也校验一次，
+	//不把这件事全押在 bridge 上。
+	tag := s.GetString("tag")
+	if !selfupdate.ValidTag(tag) {
+		s.AjaxErr("that is not a valid release tag")
+	}
+	if err := server.PushClientUpdate(id, tag); err != nil {
 		s.AjaxErr("push update fail: " + err.Error())
 	}
 	s.AjaxOk("update requested, watch the client version column for the result")

@@ -27,7 +27,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -42,6 +44,26 @@ import (
 //	-X ehang.io/nps/lib/selfupdate.Repo=owner/name
 var Repo = version.Fork
 
+// Role is which artifact this binary is, "npc" or "nps". It decides both the
+// release asset to fetch and the member to take out of it, and it is set here
+// rather than read from the binary's filename: a renamed npc, or an nps.exe,
+// would otherwise silently fetch the wrong side of the release.
+var Role = "npc"
+
+// tagPattern is what a release tag is allowed to look like. The tag arrives
+// from the server over the control connection and is interpolated into a
+// download URL, so without this a tag containing path segments would send the
+// node to a different repository entirely -- and since the checksum file is
+// fetched from that same base, it would verify the attacker's archive against
+// the attacker's checksums and then exec the result.
+var tagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
+// ValidTag reports whether tag is safe to put in a release URL. An empty tag
+// means "the latest release" and is always allowed.
+func ValidTag(tag string) bool {
+	return tag == "" || tagPattern.MatchString(tag)
+}
+
 const (
 	// VerifyWindow is how long a freshly installed binary has to connect to
 	// the server before it is considered a failure and rolled back.
@@ -52,6 +74,10 @@ const (
 	// read the marker: systemd keeps restarting it, the counter keeps
 	// climbing, and the rollback eventually happens without anyone present.
 	MaxAttempts = 3
+
+	// keepBackups bounds how many previous binaries are kept beside the
+	// current one.
+	keepBackups = 3
 
 	sumsAsset      = "sha256sums.txt"
 	downloadWindow = 10 * time.Minute
@@ -89,26 +115,16 @@ func markerPath(bin string) string {
 	return filepath.Join(filepath.Dir(bin), "."+filepath.Base(bin)+".update-pending")
 }
 
-// assetName maps this build onto the release asset that carries it. The names
-// come from build.assets.sh, e.g. linux_amd64_client.tar.gz.
-func assetName(bin string) (string, error) {
-	role := "client"
-	if filepath.Base(bin) == "nps" {
-		role = "server"
+// assetName maps this build onto the release asset that carries it. The
+// GOOS_GOARCH_kind form has to stay in step with build.release.sh, which
+// labels its output ${goos}_${goarch}: inventing a finer-grained label here
+// (arm_v7 for GOARCH arm, say) just produces a 404 on the node.
+func assetName() string {
+	kind := "client"
+	if Role == "nps" {
+		kind = "server"
 	}
-	arch := runtime.GOARCH
-	if arch == "arm" {
-		// The release carries arm_v5/v6/v7 rather than a bare arm build;
-		// v7 covers every armv7-and-up board worth running this on.
-		arch = "arm_v7"
-	}
-	name := fmt.Sprintf("%s_%s_%s.tar.gz", runtime.GOOS, arch, role)
-	switch runtime.GOOS {
-	case "linux", "darwin", "freebsd", "windows":
-		return name, nil
-	default:
-		return "", fmt.Errorf("selfupdate: no release asset for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
+	return fmt.Sprintf("%s_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH, kind)
 }
 
 func releaseURL(tag, asset string) string {
@@ -215,6 +231,19 @@ func smokeTest(path string) error {
 // it over the running binary and restarts into it. It does not return on
 // success: the process is replaced.
 func Apply(tag string) error {
+	if !ValidTag(tag) {
+		// Refused before it reaches a URL. The server is meant to have
+		// checked too, but a node must not depend on that: this string
+		// decides which repository the binary it is about to exec comes from.
+		return fmt.Errorf("selfupdate: refusing unsafe release tag %q", tag)
+	}
+	if runtime.GOOS == "windows" {
+		// The swap below is a rename over the running image, which Windows
+		// refuses, and restart there can only exit -- which the service
+		// manager reads as a clean stop and does not undo. Failing here
+		// keeps a Windows node up instead of taking it down for good.
+		return errors.New("selfupdate: in-place update is not supported on windows")
+	}
 	if !atomic.CompareAndSwapInt32(&applying, 0, 1) {
 		return errors.New("selfupdate: an update is already in progress")
 	}
@@ -224,10 +253,7 @@ func Apply(tag string) error {
 	if err != nil {
 		return err
 	}
-	asset, err := assetName(bin)
-	if err != nil {
-		return err
-	}
+	asset := assetName()
 
 	ctx, cancel := context.WithTimeout(context.Background(), downloadWindow)
 	defer cancel()
@@ -246,7 +272,7 @@ func Apply(tag string) error {
 	}
 	logs.Info("selfupdate: checksum ok, %d bytes", len(archive))
 
-	payload, err := extractBinary(archive, filepath.Base(bin))
+	payload, err := extractBinary(archive, Role)
 	if err != nil {
 		return err
 	}
@@ -262,6 +288,11 @@ func Apply(tag string) error {
 	if err := smokeTest(staged); err != nil {
 		return err
 	}
+
+	// Old backups go before the new one is written, not after. Each is a
+	// full copy of a twelve megabyte binary, and on a node with a small
+	// rootfs the first thing an unbounded pile breaks is the next update.
+	pruneBackups(bin, keepBackups-1)
 
 	backup := fmt.Sprintf("%s.bak.%s", bin, time.Now().Format("20060102-150405"))
 	if err := copyFile(bin, backup); err != nil {
@@ -393,6 +424,24 @@ func saveMarker(path string, m *marker) error {
 		return err
 	}
 	return ioutil.WriteFile(path, b, 0600)
+}
+
+// pruneBackups keeps the newest keep backups next to bin and removes the rest.
+// Names carry a sortable timestamp, so lexical order is chronological.
+func pruneBackups(bin string, keep int) {
+	if keep < 0 {
+		keep = 0
+	}
+	found, err := filepath.Glob(bin + ".bak.*")
+	if err != nil || len(found) <= keep {
+		return
+	}
+	sort.Strings(found)
+	for _, old := range found[:len(found)-keep] {
+		if err := os.Remove(old); err == nil {
+			logs.Info("selfupdate: pruned old backup %s", old)
+		}
+	}
 }
 
 func copyFile(src, dst string) error {

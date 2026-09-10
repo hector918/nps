@@ -17,6 +17,13 @@ var VERSION = "0.27.0-hz1"
 // place a version is printed or reported says plainly which one it is.
 const Fork = "hector918/nps"
 
+// ForkMarker must appear in VERSION for every build from this fork, including
+// the tag the release pipeline stamps in. The server uses it to tell whether a
+// connected client understands the control messages this fork added -- an
+// older client would misparse them -- so build.release.sh refuses to build a
+// tag without it.
+const ForkMarker = "-hz"
+
 // Compulsory minimum version, Minimum downward compatibility to this version
 //
 // Do not touch this. The server compares it byte for byte against what a

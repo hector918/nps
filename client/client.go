@@ -91,6 +91,7 @@ retry:
 
 //handle main connection
 func (s *TRPClient) handleMain() {
+readLoop:
 	for {
 		flags, err := s.signal.ReadFlag()
 		if err != nil {
@@ -119,13 +120,16 @@ func (s *TRPClient) handleMain() {
 				go s.newUdpConn(localAddr, string(lAddr), string(pwd))
 			}
 		case common.WORK_UPDATE:
-			// The tag is always sent, empty meaning "the latest release", so
-			// that the control stream stays in sync whether or not this
-			// client knows what to do with the flag.
+			// The tag always follows the flag, empty meaning "the latest
+			// release".
 			tag, err := s.signal.GetShortLenContent()
 			if err != nil {
+				// Leave through the loop, not out of the function: the exit
+				// below closes the mux tunnel and resets NowStatus, and
+				// returning here would leak both and leave this client
+				// reported as connected while it reconnects.
 				logs.Warn("update: cannot read the requested tag,", err)
-				return
+				break readLoop
 			}
 			logs.Info("update: the server asked this client to update to %q", string(tag))
 			go func(tag string) {
