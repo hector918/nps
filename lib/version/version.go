@@ -10,7 +10,7 @@ package version
 // Only this string is free-form. GetVersion below is compared byte for byte
 // by the server, so stamping that one instead would stop this client from
 // connecting to every server not updated in lockstep with it.
-var VERSION = "0.27.0-hz1"
+var VERSION = "v0.27.2-hz1"
 
 // Fork names the repository this binary was built from. Upstream has been
 // unmaintained since 2021 and this tree carries fixes it never got, so every

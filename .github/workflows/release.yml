@@ -36,6 +36,22 @@ jobs:
           # stay available to run by hand.
           cd nps-mux && go test -short -race ./...
 
+      # Deliberately non-blocking. A stale version number in the docs is worth
+      # knowing about immediately, but it is not worth publishing a release
+      # with no binaries attached to it -- which is what failing here would do,
+      # since this workflow only runs once the release already exists.
+      - name: Docs point at this release
+        continue-on-error: true
+        run: |
+          missing=0
+          for f in README.md README_zh.md deploy/docker/README.md; do
+            grep -q "$GITHUB_REF_NAME" "$f" || {
+              echo "::warning file=$f::still points at another release; run deploy/bump-version.sh $GITHUB_REF_NAME before tagging"
+              missing=1
+            }
+          done
+          exit $missing
+
       - name: Build
         run: |
           chmod +x build.release.sh

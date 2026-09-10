@@ -3,7 +3,7 @@
 # One command to replace a running npc or nps with a release build.
 #
 #   curl -fsSL https://raw.githubusercontent.com/hector918/nps/<tag>/deploy/update.sh | sudo bash
-#   sudo update.sh --tag v0.27.0-hz1     pin a release instead of taking the latest
+#   sudo update.sh --tag v0.27.2-hz1     pin a release instead of taking the latest
 #   sudo update.sh --file /tmp/npc       install a binary already on this host
 #   sudo update.sh --rollback            put the previous binary back
 #   DRY_RUN=1 sudo update.sh             show what would happen, change nothing
@@ -31,8 +31,8 @@ usage() {
     cat <<'USAGE'
 update.sh -- replace a running npc or nps with a release build
 
-  curl -fsSL https://raw.githubusercontent.com/hector918/nps/master/deploy/update.sh | sudo bash
-  ... | sudo bash -s -- --tag v0.27.1-hz1   install a specific release
+  curl -fsSL https://raw.githubusercontent.com/hector918/nps/<tag>/deploy/update.sh | sudo bash
+  ... | sudo bash -s -- --tag v0.27.2-hz1   install a specific release
   ... | sudo bash -s -- --rollback          put the previous binary back
 
   --tag TAG      release to install, default the latest one
