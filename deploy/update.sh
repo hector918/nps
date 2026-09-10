@@ -74,8 +74,22 @@ for candidate in npc nps; do
 done
 
 if [[ -n $PID ]]; then
+    # A containerised node is visible from the host but must not be updated
+    # this way: the path in /proc/PID/exe belongs to the container's mount
+    # namespace, and a binary swapped into a container is undone the next time
+    # it is recreated from its image. Say so plainly instead of failing later
+    # with something that reads like a broken download.
+    if grep -qE 'docker|containerd|kubepods|lxc|libpod' "/proc/$PID/cgroup" 2>/dev/null; then
+        printf 'ERROR: %s here runs inside a container, not under a service manager.\n' "$ROLE" >&2
+        printf '       Update it by rebuilding the image and recreating the container:\n' >&2
+        printf '         docker inspect %s --format "{{json .Config}} {{json .HostConfig}}"   # keep these settings\n' "$ROLE" >&2
+        printf '         docker build -f Dockerfile.%s --build-arg VERSION=<tag> -t <image>:<tag> .\n' "$ROLE" >&2
+        printf '       Swapping the binary inside a running container would be undone on the next recreate.\n' >&2
+        exit 1
+    fi
     BIN=$(readlink "/proc/$PID/exe" | sed 's/ (deleted)$//')
     UNIT=$(grep -o '[^/]*\.service' "/proc/$PID/cgroup" | head -1 || true)
+    [[ -n $UNIT ]] || die "$ROLE is running as pid $PID but not under any systemd unit; this script restarts through systemctl"
 else
     info "neither npc nor nps is running, falling back to a unit lookup"
     UNIT=$(systemctl list-units --type=service --all --plain --no-legend 2>/dev/null \
