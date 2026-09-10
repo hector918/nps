@@ -30,7 +30,11 @@ jobs:
       - name: Test
         run: |
           go vet ./lib/selfupdate/...
-          cd nps-mux && go test ./...
+          # -short, because upstream's mux tests drive docker containers on a
+          # fixed subnet and a few others time out even against pristine
+          # upstream sources. They are skipped rather than removed so they
+          # stay available to run by hand.
+          cd nps-mux && go test -short -race ./...
 
       - name: Build
         run: |
