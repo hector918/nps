@@ -161,7 +161,12 @@ fi
 chmod 0755 "$WORK/staged"
 
 # ---------------------------------------------------------------- verify ----
-file -b "$WORK/staged" | grep -q 'ELF' || die "the staged file is not an ELF binary"
+# Read the ELF magic directly rather than shelling out to file(1), which is
+# not installed on a minimal server image -- and whose absence made this look
+# like a corrupt download rather than a missing tool.
+if [[ $(od -An -tx1 -N4 < "$WORK/staged" | tr -d ' \n') != 7f454c46 ]]; then
+    die "the staged file is not an ELF binary"
+fi
 if cmp -s "$WORK/staged" "$BIN"; then
     info "already running this exact binary, nothing to do"
     exit 0
@@ -183,7 +188,9 @@ run cp -a "$BIN" "$BACKUP"
 # A running executable cannot be overwritten (ETXTBSY) but its directory entry
 # can be replaced: stage alongside, then rename.
 run install -m 0755 "$WORK/staged" "$BIN.new"
-run chown --reference="$BACKUP" "$BIN.new"
+# chown --reference is GNU-only; fall back to whatever stat can tell us.
+OWNER=$(stat -c '%u:%g' "$BACKUP" 2>/dev/null || true)
+[[ -n $OWNER ]] && run chown "$OWNER" "$BIN.new"
 run mv -f "$BIN.new" "$BIN"
 
 info "restarting $UNIT"
@@ -198,23 +205,68 @@ fi
 # Readiness differs by role and neither form depends on the node's log level.
 # A client proves itself by connecting out to its server; a server proves
 # itself by listening again.
+#
+# The socket check degrades rather than failing closed. A missing ss would
+# otherwise make every healthy update look dead and get rolled back, which is
+# a far worse outcome than proving less.
+if command -v ss >/dev/null 2>&1; then
+    SOCKET_TOOL=ss
+elif command -v netstat >/dev/null 2>&1; then
+    SOCKET_TOOL=netstat
+else
+    SOCKET_TOOL=""
+    info "WARNING: no ss or netstat here, falling back to a liveness check"
+fi
+
+sockets_ready() {
+    local pid=$1
+    case $SOCKET_TOOL in
+        ss)
+            if [[ $ROLE == nps ]]; then
+                ss -tlnp 2>/dev/null | grep -q "pid=$pid,"
+            else
+                # TCP for the usual bridge, UDP for a node whose bridge is
+                # kcp -- checking only TCP would roll back every healthy kcp
+                # node, every time.
+                ss -tnp state established 2>/dev/null | grep -q "pid=$pid," ||
+                    ss -unp 2>/dev/null | grep -q "pid=$pid,"
+            fi
+            ;;
+        netstat)
+            if [[ $ROLE == nps ]]; then
+                netstat -tlnp 2>/dev/null | grep -q "[[:space:]]$pid/"
+            else
+                netstat -tunp 2>/dev/null | grep -q "[[:space:]]$pid/"
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 info "waiting up to ${WAIT_SECS}s for $ROLE to come back"
 ok=0
+stable=0
 deadline=$((SECONDS + WAIT_SECS))
 while ((SECONDS < deadline)); do
     if systemctl is-active --quiet "$UNIT"; then
         NEW_PID=$(pgrep -x "$ROLE" | head -1 || true)
         if [[ -n $NEW_PID ]]; then
-            if [[ $ROLE == nps ]]; then
-                ss -tlnp 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
+            if [[ -n $SOCKET_TOOL ]]; then
+                sockets_ready "$NEW_PID" && { ok=1; break; }
             else
-                # TCP for the usual bridge, UDP for a node whose bridge is
-                # kcp -- checking only TCP would roll back every healthy kcp
-                # node, every time.
-                ss -tnp state established 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
-                ss -unp 2>/dev/null | grep -q "pid=$NEW_PID," && { ok=1; break; }
+                # Without a socket tool, the strongest available evidence is
+                # that one pid stayed up across the settle window: a binary
+                # that cannot run at all dies inside it.
+                stable=$((stable + 1))
+                ((stable >= 8)) && { ok=1; break; }
             fi
+        else
+            stable=0
         fi
+    else
+        stable=0
     fi
     sleep 1
 done
@@ -230,7 +282,10 @@ if ((ok == 0)); then
 fi
 
 # --------------------------------------------------------------- cleanup ----
-mapfile -t OLD < <(ls -1t "$BIN".bak.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)))
-for f in "${OLD[@]:-}"; do [[ -n $f ]] && rm -f "$f" && info "pruned $f"; done
+# A plain read loop rather than mapfile, which needs bash 4 and is one more
+# thing to be missing on a stripped-down host.
+ls -1t "$BIN".bak.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | while read -r f; do
+    [[ -n $f ]] && rm -f "$f" && info "pruned $f"
+done
 
 info "done. $ROLE is up on $STAGED_VERSION"
