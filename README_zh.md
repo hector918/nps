@@ -37,9 +37,22 @@ nps是一款轻量级、高性能、功能强大的**内网穿透**代理服务�
 ## 快速开始
 
 ### 安装
-> [releases](https://github.com/ehang-io/nps/releases)
+> [releases](https://github.com/hector918/nps/releases)
 
 下载对应的系统版本即可，服务端和客户端是单独的
+
+或者更新一台已经在跑的节点。它只替换二进制，service 文件和配置一律不动，
+所以参数启动和配置文件启动都适用；替换后等隧道恢复，起不来就自动回滚：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.2-hz1/deploy/update.sh | sudo bash
+```
+
+注意钉住 tag，不要指向 `master`。这条命令把脚本喂给 root shell，它指向哪个
+ref，哪个 ref 就握着所有跑过它的节点：tag 是固定的，分支是最后一次推上去的
+任何东西。
+
+跑在容器里的节点不走这条路，见 [deploy/docker](deploy/docker)。
 
 ### 服务端启动
 下载完服务器压缩包后，解压，然后进入解压后的文件夹

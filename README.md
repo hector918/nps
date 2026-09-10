@@ -30,11 +30,25 @@ NPS is a lightweight, high-performance, powerful **intranet penetration** proxy 
 
 ### Installation
 
-> [releases](https://github.com/ehang-io/nps/releases)
+> [releases](https://github.com/hector918/nps/releases)
 
 Download the corresponding system version, the server and client are separate.
 
-or : curl -fsSL https://raw.githubusercontent.com/hector918/nps/master/deploy/update.sh | sudo bash
+Or update a node that is already running. This replaces the binary only --
+the service unit and the config are left alone, so it makes no difference
+whether the node was started from flags or from a config file -- then waits
+for the tunnel to come back and rolls back if it does not:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.2-hz1/deploy/update.sh | sudo bash
+```
+
+Pin the tag rather than pointing at `master`. This pipes a script into a root
+shell, so whichever ref it names holds the keys to every node that runs it: a
+tag is fixed, a branch is whatever was pushed to it last.
+
+A node running in a container is not updated this way -- see
+[deploy/docker](deploy/docker).
 
 ### Server start
 
