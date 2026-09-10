@@ -25,6 +25,27 @@ TAG=""
 LOCAL_FILE=""
 ROLLBACK=0
 
+# Spelled out rather than read back out of the file: the usual way to run this
+# is piped into bash, where the script is stdin and $0 is "bash".
+usage() {
+    cat <<'USAGE'
+update.sh -- replace a running npc or nps with a release build
+
+  curl -fsSL https://raw.githubusercontent.com/hector918/nps/master/deploy/update.sh | sudo bash
+  ... | sudo bash -s -- --tag v0.27.1-hz1   install a specific release
+  ... | sudo bash -s -- --rollback          put the previous binary back
+
+  --tag TAG      release to install, default the latest one
+  --file PATH    install a binary already on this host instead of downloading
+  --rollback     restore the most recent backup
+  -h, --help     this text
+
+  REPO=owner/name   pull from a different repository
+  WAIT_SECS=30      how long to wait for the tunnel to come back
+  DRY_RUN=1         show what would happen, change nothing
+USAGE
+}
+
 info() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 run()  { if [[ $DRY_RUN == 1 ]]; then printf '  would run: %s\n' "$*"; else "$@"; fi; }
@@ -34,7 +55,7 @@ while [[ $# -gt 0 ]]; do
         --tag)      TAG=${2:?--tag needs a value}; shift 2 ;;
         --file)     LOCAL_FILE=${2:?--file needs a path}; shift 2 ;;
         --rollback) ROLLBACK=1; shift ;;
-        -h|--help)  sed -n '2,18p' "$0"; exit 0 ;;
+        -h|--help)  usage; exit 0 ;;
         *)          die "unknown argument: $1" ;;
     esac
 done
