@@ -111,11 +111,24 @@ info "binary: $BIN"
 # A server renders its web UI from web/views and web/static beside its config,
 # not from the binary, so a new binary alone keeps serving the old pages. The
 # directory is found the way nps finds it (common.GetRunPath): /etc/nps when
-# that exists, otherwise the binary's own directory.
+# that exists, otherwise the directory of its argv[0] -- not of /proc/PID/exe,
+# which resolves symlinks nps itself does not, and would name a different
+# directory for a binary started through one.
 WEB_DIR=""
 if [[ $ROLE == nps ]]; then
-    if [[ -d /etc/nps ]]; then WEB_DIR=/etc/nps/web; else WEB_DIR="$(dirname "$BIN")/web"; fi
-    if [[ -d $WEB_DIR/views ]]; then
+    if [[ -d /etc/nps ]]; then
+        RUN_DIR=/etc/nps
+    elif [[ -n $PID ]]; then
+        ARGV0=$(tr '\0' '\n' < "/proc/$PID/cmdline" | head -1)
+        [[ $ARGV0 == /* ]] || ARGV0="$(readlink "/proc/$PID/cwd")/$ARGV0"
+        RUN_DIR=$(dirname "$ARGV0")
+    else
+        RUN_DIR=$(dirname "$BIN")
+    fi
+    WEB_DIR="$RUN_DIR/web"
+    # A backup counts too: it is what --rollback needs, even if the live
+    # directory is missing.
+    if [[ -d $WEB_DIR/views ]] || compgen -G "$WEB_DIR.bak.*" >/dev/null; then
         info "web:    $WEB_DIR"
     else
         info "WARNING: no web UI at $WEB_DIR, updating the binary only"
@@ -146,7 +159,8 @@ fi
 # it, and /tmp is mounted noexec on plenty of hardened hosts. It also keeps the
 # final move a rename on one filesystem.
 WORK=$(mktemp -d "$(dirname "$BIN")/.update.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+WEB_NEW=""
+trap 'rm -rf "$WORK" ${WEB_NEW:+"$WEB_NEW"}' EXIT
 
 if [[ -n $LOCAL_FILE ]]; then
     [[ -f $LOCAL_FILE ]] || die "no such file: $LOCAL_FILE"
@@ -217,8 +231,14 @@ if [[ $(od -An -tx1 -N4 < "$WORK/staged" | tr -d ' \n') != 7f454c46 ]]; then
     die "the staged file is not an ELF binary"
 fi
 if cmp -s "$WORK/staged" "$BIN"; then
-    info "already running this exact binary, nothing to do"
-    exit 0
+    # The pages can lag a matching binary -- after --file, or an update that
+    # predates this script handling them -- so only stop if they match too.
+    if [[ -z $WEB_DIR ]] || { diff -rq "$WORK/web/views" "$WEB_DIR/views" &&
+                              diff -rq "$WORK/web/static" "$WEB_DIR/static"; } >/dev/null 2>&1; then
+        info "already running this exact binary, nothing to do"
+        exit 0
+    fi
+    info "the binary is current but the web UI is not, updating it"
 fi
 
 # -version prints and exits on both npc and nps. Never use a bare word here:
@@ -234,11 +254,22 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP="$BIN.bak.$STAMP"
 info "backing up to $BACKUP"
 run cp -a "$BIN" "$BACKUP"
+# The new web UI is assembled in full beside the live one before anything is
+# changed, so a failure here -- a full disk, say -- leaves the node exactly as
+# it was. The swap further down is then only renames.
 WEB_BACKUP=""
 if [[ -n $WEB_DIR ]]; then
+    WEB_NEW="$WEB_DIR.new"
     WEB_BACKUP="$WEB_DIR.bak.$STAMP"
-    info "backing up the web UI to $WEB_BACKUP"
-    run cp -a "$WEB_DIR" "$WEB_BACKUP"
+    info "staging the web UI in $WEB_NEW"
+    run rm -rf "$WEB_NEW"
+    if [[ -d $WEB_DIR ]]; then
+        run cp -a "$WEB_DIR" "$WEB_NEW"
+        run rm -rf "$WEB_NEW/views" "$WEB_NEW/static"
+    else
+        run mkdir -p "$WEB_NEW"
+    fi
+    run cp -a "$WORK/web/views" "$WORK/web/static" "$WEB_NEW/"
 fi
 
 # A running executable cannot be overwritten (ETXTBSY) but its directory entry
@@ -250,9 +281,9 @@ OWNER=$(stat -c '%u:%g' "$BACKUP" 2>/dev/null || true)
 run mv -f "$BIN.new" "$BIN"
 
 if [[ -n $WEB_DIR ]]; then
-    info "replacing the web UI"
-    run rm -rf "$WEB_DIR/views" "$WEB_DIR/static"
-    run cp -a "$WORK/web/views" "$WORK/web/static" "$WEB_DIR/"
+    info "replacing the web UI, previous one kept as $WEB_BACKUP"
+    [[ -d $WEB_DIR ]] && run mv "$WEB_DIR" "$WEB_BACKUP"
+    run mv "$WEB_NEW" "$WEB_DIR"
 fi
 
 info "restarting $UNIT"
@@ -336,7 +367,7 @@ done
 if ((ok == 0)); then
     info "FAILED to come up, rolling back"
     mv -f "$BACKUP" "$BIN"
-    if [[ -n $WEB_BACKUP ]]; then
+    if [[ -n $WEB_BACKUP && -d $WEB_BACKUP ]]; then
         rm -rf "$WEB_DIR"
         mv -f "$WEB_BACKUP" "$WEB_DIR"
     fi
