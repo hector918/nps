@@ -13,7 +13,7 @@
 #   sha256sum -c --ignore-missing sha256sums.txt          # do not skip this
 #   tar -xzOf linux_${A}_client.tar.gz npc > npc          # the binary only
 #   chmod +x npc
-#   docker build -f Dockerfile.npc -t npc:v0.27.4-hz1 .
+#   docker build -f Dockerfile.npc -t npc:v0.27.5-hz1 .
 #
 # Only npc comes out of the tarball on purpose. It also carries conf/npc.conf,
 # which is a template -- baking that into an image, or unpacking it over a
