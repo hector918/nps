@@ -34,10 +34,11 @@ NPS is a lightweight, high-performance, powerful **intranet penetration** proxy 
 
 Download the corresponding system version, the server and client are separate.
 
-Or update a node that is already running. This replaces the binary only --
-the service unit and the config are left alone, so it makes no difference
-whether the node was started from flags or from a config file -- then waits
-for the tunnel to come back and rolls back if it does not:
+Or update a node that is already running. This replaces the binary, and on a
+server also the web UI in `web/views` and `web/static` -- the service unit and
+the config are left alone, so it makes no difference whether the node was
+started from flags or from a config file -- then waits for it to come back and
+rolls back if it does not:
 
 ```sh
 curl -fsSL https://github.com/hector918/nps/releases/latest/download/update.sh | sudo bash

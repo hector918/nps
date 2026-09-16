@@ -144,6 +144,7 @@ function submitform(action, url, postdata) {
         case 'start':
         case 'stop':
         case 'delete':
+        case 'update':
             var langobj = languages['content']['confirm'][action];
             action = (langobj[languages['current']] || langobj[languages['default']] || 'Are you sure you want to ' + action + ' it?');
             if (! confirm(action)) return;

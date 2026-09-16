@@ -8,9 +8,10 @@
 #   sudo update.sh --rollback            put the previous binary back
 #   DRY_RUN=1 sudo update.sh             show what would happen, change nothing
 #
-# It touches nothing but the binary. The service unit, its flags and any
-# npc.conf are left exactly as they are, so a node started with -config= and a
-# node started with bare flags need no special handling.
+# It touches nothing but the binary, and on a server the web UI's templates and
+# assets that ship with it. The service unit, its flags and any conf/ file are
+# left exactly as they are, so a node started with -config= and a node started
+# with bare flags need no special handling.
 #
 # Every release carries this script as an asset, which is where the command
 # above takes it from. Never fetch it from master: piping it to a root shell
@@ -107,12 +108,34 @@ info "role:   $ROLE"
 info "unit:   $UNIT"
 info "binary: $BIN"
 
+# A server renders its web UI from web/views and web/static beside its config,
+# not from the binary, so a new binary alone keeps serving the old pages. The
+# directory is found the way nps finds it (common.GetRunPath): /etc/nps when
+# that exists, otherwise the binary's own directory.
+WEB_DIR=""
+if [[ $ROLE == nps ]]; then
+    if [[ -d /etc/nps ]]; then WEB_DIR=/etc/nps/web; else WEB_DIR="$(dirname "$BIN")/web"; fi
+    if [[ -d $WEB_DIR/views ]]; then
+        info "web:    $WEB_DIR"
+    else
+        info "WARNING: no web UI at $WEB_DIR, updating the binary only"
+        WEB_DIR=""
+    fi
+fi
+
 # -------------------------------------------------------------- rollback ----
 if [[ $ROLLBACK == 1 ]]; then
     BACKUP=$(ls -1t "$BIN".bak.* 2>/dev/null | head -1 || true)
     [[ -n $BACKUP ]] || die "no backup found next to $BIN"
     info "restoring $BACKUP"
     run mv -f "$BACKUP" "$BIN"
+    # The web UI backed up with that binary shares its timestamp. Restoring
+    # one without the other would serve pages the binary may not handle.
+    if [[ -n $WEB_DIR && -d $WEB_DIR.bak.${BACKUP##*.bak.} ]]; then
+        info "restoring $WEB_DIR.bak.${BACKUP##*.bak.}"
+        run rm -rf "$WEB_DIR"
+        run mv -f "$WEB_DIR.bak.${BACKUP##*.bak.}" "$WEB_DIR"
+    fi
     run systemctl restart "$UNIT"
     info "rolled back"
     exit 0
@@ -129,6 +152,10 @@ if [[ -n $LOCAL_FILE ]]; then
     [[ -f $LOCAL_FILE ]] || die "no such file: $LOCAL_FILE"
     cp "$LOCAL_FILE" "$WORK/staged"
     info "using local file $LOCAL_FILE"
+    if [[ -n $WEB_DIR ]]; then
+        info "WARNING: --file installs the binary only, the web UI at $WEB_DIR is left as it is"
+        WEB_DIR=""
+    fi
 else
     # These must be the GOARCH values build.release.sh labels its output with,
     # not finer-grained ones: asking for linux_arm_v7 when the builder produced
@@ -171,6 +198,13 @@ else
     # template, on every node at once.
     tar -xzOf "$WORK/$ASSET" "$ROLE" > "$WORK/staged" \
         || die "no $ROLE inside $ASSET"
+
+    # The web UI is code, not configuration, and has to match the binary: it
+    # is replaced whole. Local edits to the templates do not survive this.
+    if [[ -n $WEB_DIR ]]; then
+        tar -xzf "$WORK/$ASSET" -C "$WORK" web/views web/static \
+            || die "no web/views or web/static inside $ASSET"
+    fi
 fi
 
 chmod 0755 "$WORK/staged"
@@ -196,9 +230,16 @@ info "staged: $STAGED_VERSION"
 info "current: $("$BIN" -version 2>/dev/null | head -1 || echo unknown)"
 
 # --------------------------------------------------------------- install ----
-BACKUP="$BIN.bak.$(date +%Y%m%d-%H%M%S)"
+STAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP="$BIN.bak.$STAMP"
 info "backing up to $BACKUP"
 run cp -a "$BIN" "$BACKUP"
+WEB_BACKUP=""
+if [[ -n $WEB_DIR ]]; then
+    WEB_BACKUP="$WEB_DIR.bak.$STAMP"
+    info "backing up the web UI to $WEB_BACKUP"
+    run cp -a "$WEB_DIR" "$WEB_BACKUP"
+fi
 
 # A running executable cannot be overwritten (ETXTBSY) but its directory entry
 # can be replaced: stage alongside, then rename.
@@ -207,6 +248,12 @@ run install -m 0755 "$WORK/staged" "$BIN.new"
 OWNER=$(stat -c '%u:%g' "$BACKUP" 2>/dev/null || true)
 [[ -n $OWNER ]] && run chown "$OWNER" "$BIN.new"
 run mv -f "$BIN.new" "$BIN"
+
+if [[ -n $WEB_DIR ]]; then
+    info "replacing the web UI"
+    run rm -rf "$WEB_DIR/views" "$WEB_DIR/static"
+    run cp -a "$WORK/web/views" "$WORK/web/static" "$WEB_DIR/"
+fi
 
 info "restarting $UNIT"
 run systemctl restart "$UNIT"
@@ -289,6 +336,10 @@ done
 if ((ok == 0)); then
     info "FAILED to come up, rolling back"
     mv -f "$BACKUP" "$BIN"
+    if [[ -n $WEB_BACKUP ]]; then
+        rm -rf "$WEB_DIR"
+        mv -f "$WEB_BACKUP" "$WEB_DIR"
+    fi
     systemctl restart "$UNIT"
     sleep 3
     systemctl is-active --quiet "$UNIT" \
@@ -302,5 +353,10 @@ fi
 ls -1t "$BIN".bak.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | while read -r f; do
     [[ -n $f ]] && rm -f "$f" && info "pruned $f"
 done
+if [[ -n $WEB_DIR ]]; then
+    ls -1dt "$WEB_DIR".bak.* 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | while read -r f; do
+        [[ -n $f ]] && rm -rf "$f" && info "pruned $f"
+    done
+fi
 
 info "done. $ROLE is up on $STAGED_VERSION"
