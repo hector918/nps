@@ -2,9 +2,11 @@
 #
 # Point every version reference in the tree at a release tag.
 #
-#   ./deploy/bump-version.sh v0.27.3-hz1
-#   git commit -am "release v0.27.3-hz1" && git push
-#   # then publish the release on that tag
+#   ./deploy/bump-version.sh v0.27.4-hz1
+#   git commit -am "release v0.27.4-hz1"
+#   git tag v0.27.4-hz1
+#   git push origin master v0.27.4-hz1
+#   # the tag push builds and publishes the release, see release.yml
 #
 # Run it before tagging, not after: the tag captures the tree as it is at that
 # commit, so docs fixed afterwards are not in the release anyone reads.

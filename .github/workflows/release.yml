@@ -1,8 +1,12 @@
 name: Release
 
+# Pushing a release tag is the whole release: this builds, tests and creates
+# the GitHub release with its assets. Nothing is clicked in the web UI, and a
+# release never exists without binaries, since it is only created at the end.
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*-hz*'
 
 permissions:
   contents: write
@@ -40,9 +44,9 @@ jobs:
           go test -short ./...
 
       # Deliberately non-blocking. A stale version number in the docs is worth
-      # knowing about immediately, but it is not worth publishing a release
-      # with no binaries attached to it -- which is what failing here would do,
-      # since this workflow only runs once the release already exists.
+      # knowing about immediately, but not worth withholding a release whose
+      # tag is already pushed, which would then have to be deleted and pushed
+      # again.
       - name: Docs point at this release
         continue-on-error: true
         run: |
@@ -60,9 +64,11 @@ jobs:
           chmod +x build.release.sh
           ./build.release.sh "${GITHUB_REF_NAME}"
 
-      - name: Upload
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
           # update.sh rides along so the install one-liner can take it from
           # releases/latest/download: always current, and fixed per release
           # rather than tracking a branch.
