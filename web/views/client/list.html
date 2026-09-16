@@ -171,7 +171,10 @@
             {
                 field: 'option',//域值
                 title: '<span langtag="word-option"></span>',//内容
-                align: 'center',
+                // left, not center: rows carry different sets of buttons (the
+                // update button only shows for some), and centred groups of
+                // different widths do not line up
+                align: 'left',
                 halign: 'center',
                 visible: true,//false表示不显示
                 formatter: function (value, row, index) {
