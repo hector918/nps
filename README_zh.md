@@ -45,7 +45,7 @@ nps是一款轻量级、高性能、功能强大的**内网穿透**代理服务�
 所以参数启动和配置文件启动都适用；替换后等隧道恢复，起不来就自动回滚：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.2-hz1/deploy/update.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.3-hz1/deploy/update.sh | sudo bash
 ```
 
 注意钉住 tag，不要指向 `master`。这条命令把脚本喂给 root shell，它指向哪个

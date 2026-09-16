@@ -40,7 +40,7 @@ whether the node was started from flags or from a config file -- then waits
 for the tunnel to come back and rolls back if it does not:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.2-hz1/deploy/update.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.3-hz1/deploy/update.sh | sudo bash
 ```
 
 Pin the tag rather than pointing at `master`. This pipes a script into a root
