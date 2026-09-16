@@ -23,7 +23,7 @@ case $(uname -m) in
   aarch64|arm64) A=arm64 ;;
   *) echo "no release for $(uname -m)"; exit 1 ;;
 esac
-TAG=v0.27.3-hz1
+TAG=v0.27.4-hz1
 BASE=https://github.com/hector918/nps/releases/download/$TAG
 
 # client
@@ -48,7 +48,7 @@ replaces a real vkey and tunnel list with placeholders.
 docker run -d --name npc \
   --restart unless-stopped \
   -v /path/to/your/npc.conf:/conf/npc.conf:ro \
-  npc:v0.27.3-hz1
+  npc:v0.27.4-hz1
 ```
 
 The config is a bind mount, never an image layer: it is the node's identity.
@@ -56,7 +56,7 @@ The config is a bind mount, never an image layer: it is the node's identity.
 different path is just a different argument:
 
 ```sh
-docker run ... npc:v0.27.3-hz1 -config=/etc/npc/npc.conf
+docker run ... npc:v0.27.4-hz1 -config=/etc/npc/npc.conf
 ```
 
 The server needs its state directory mounted at `/conf` -- `nps.conf` plus
