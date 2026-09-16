@@ -620,14 +620,39 @@ func (Self *sendWindow) WriteFull(buf []byte, id int32) (n int, err error) {
 		}
 		n += int(l)
 		l = 0
+		var drained <-chan struct{}
 		if part {
-			Self.mux.sendInfo(muxNewMsgPart, id, bufSeg)
+			drained = Self.mux.sendInfo(muxNewMsgPart, id, bufSeg)
 		} else {
-			Self.mux.sendInfo(muxNewMsg, id, bufSeg)
+			drained = Self.mux.sendInfo(muxNewMsg, id, bufSeg)
 		}
 		// send to other side, not send nil data to other side
+		if drained != nil {
+			if err = Self.waitQueue(drained); err != nil {
+				break
+			}
+		}
 	}
 	return
+}
+
+// waitQueue blocks while this stream holds more than its share of the mux's
+// write queue, see sendQueue.Push.
+func (Self *sendWindow) waitQueue(drained <-chan struct{}) (err error) {
+	var timeout <-chan time.Time
+	if !Self.timeout.IsZero() {
+		timer := time.NewTimer(time.Until(Self.timeout))
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case <-drained:
+		return nil
+	case <-timeout:
+		return errors.New("conn.writeWindow: write to time out")
+	case <-Self.closeOpCh:
+		return errors.New("conn.writeWindow: window closed")
+	}
 }
 
 func (Self *sendWindow) SetTimeOut(t time.Time) {

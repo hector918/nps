@@ -35,6 +35,9 @@ jobs:
           # upstream sources. They are skipped rather than removed so they
           # stay available to run by hand.
           cd nps-mux && go test -short -race ./...
+          # The end-to-end mux tests skip themselves under -race: closing a
+          # mux races on close flags upstream never synchronised.
+          go test -short ./...
 
       # Deliberately non-blocking. A stale version number in the docs is worth
       # knowing about immediately, but it is not worth publishing a release

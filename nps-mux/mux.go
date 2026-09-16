@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -42,13 +43,15 @@ type Mux struct {
 	pingCheckTime      uint32 // we check the ping per 5s
 	pingCheckThreshold uint32
 	connType           string
-	writeQueue         priorityQueue
+	writeQueue         sendQueue
 	newConnQueue       connQueue
+	closeOnce          sync.Once
 }
 
 func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 	//c.(*net.TCPConn).SetReadBuffer(0)
 	//c.(*net.TCPConn).SetWriteBuffer(0)
+	tuneTCP(c)
 	fd, err := getConnFd(c)
 	if err != nil {
 		log.Println(err)
@@ -120,7 +123,9 @@ func (s *Mux) Addr() net.Addr {
 	return s.conn.LocalAddr()
 }
 
-func (s *Mux) sendInfo(flag uint8, id int32, data interface{}) {
+// sendInfo queues a frame. The channel it may return is the write queue's
+// backpressure for stream data, see sendQueue.Push.
+func (s *Mux) sendInfo(flag uint8, id int32, data interface{}) (drained <-chan struct{}) {
 	if s.IsClose {
 		return
 	}
@@ -133,12 +138,18 @@ func (s *Mux) sendInfo(flag uint8, id int32, data interface{}) {
 		_ = s.Close()
 		return
 	}
-	s.writeQueue.Push(pack)
-	return
+	return s.writeQueue.Push(pack)
 }
+
+// writeBatchSize caps how many bytes of frames go to the connection in one
+// write. Once written their order is fixed, so this is also how long a newly
+// queued frame from another stream may have to wait.
+const writeBatchSize = 16 * 1024
 
 func (s *Mux) writeSession() {
 	go func() {
+		packs := make([]*muxPackager, 0, 16)
+		vec := make(net.Buffers, 0, 32)
 		for {
 			if s.IsClose {
 				break
@@ -147,15 +158,24 @@ func (s *Mux) writeSession() {
 			if s.IsClose {
 				break
 			}
-			//if pack.flag == muxNewMsg || pack.flag == muxNewMsgPart {
-			//	if pack.length >= 100 {
-			//		log.Println("write session id", pack.id, "\n", string(pack.content[:100]))
-			//	} else {
-			//		log.Println("write session id", pack.id, "\n", string(pack.content[:pack.length]))
-			//	}
-			//}
-			err := pack.Pack(s.conn)
-			muxPack.Put(pack)
+			bufs, size := vec[:0], 0
+			for pack != nil {
+				packs = append(packs, pack)
+				bufs = pack.appendTo(bufs)
+				size += pack.wireSize()
+				if size >= writeBatchSize {
+					break
+				}
+				pack = s.writeQueue.TryPop()
+			}
+			vec = bufs[:0]
+			_, err := bufs.WriteTo(s.conn)
+			for i, p := range packs {
+				p.free()
+				muxPack.Put(p)
+				packs[i] = nil
+			}
+			packs = packs[:0]
 			if err != nil {
 				log.Println("mux: Pack err", err)
 				_ = s.Close()
@@ -322,20 +342,24 @@ func (s *Mux) newMsg(connection *conn, pack *muxPackager) (err error) {
 }
 
 func (s *Mux) Close() (err error) {
-	if s.IsClose {
-		return errors.New("the mux has closed")
-	}
-	s.IsClose = true
-	log.Println("close mux")
-	s.connMap.Close()
-	//s.connMap = nil
-	s.closeChan <- struct{}{}
-	close(s.newConnCh)
-	// while target host close socket without finish steps, conn.Close method maybe blocked
-	// and tcp status change to CLOSE WAIT or TIME WAIT, so we close it in other goroutine
-	_ = s.conn.SetDeadline(time.Now().Add(time.Second * 5))
-	go s.conn.Close()
-	s.release()
+	err = errors.New("the mux has closed")
+	// Once, not just the IsClose check: the bridge closes a client's muxes
+	// while their own read and write loops may be closing them on an error,
+	// and a second pass would close newConnCh again and panic.
+	s.closeOnce.Do(func() {
+		err = nil
+		s.IsClose = true
+		log.Println("close mux")
+		s.connMap.Close()
+		//s.connMap = nil
+		s.closeChan <- struct{}{}
+		close(s.newConnCh)
+		// while target host close socket without finish steps, conn.Close method maybe blocked
+		// and tcp status change to CLOSE WAIT or TIME WAIT, so we close it in other goroutine
+		_ = s.conn.SetDeadline(time.Now().Add(time.Second * 5))
+		go s.conn.Close()
+		s.release()
+	})
 	return
 }
 
@@ -345,9 +369,7 @@ func (s *Mux) release() {
 		if pack == nil {
 			break
 		}
-		if pack.basePackager.content != nil {
-			windowBuff.Put(pack.basePackager.content)
-		}
+		pack.free()
 		muxPack.Put(pack)
 	}
 	for {

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 )
 
 type basePackager struct {
@@ -35,16 +36,6 @@ func (Self *basePackager) Set(content []byte) (err error) {
 		err = errors.New("mux:packer: newpack content is nil")
 	}
 	Self.setLength()
-	return
-}
-
-func (Self *basePackager) Pack(writer io.Writer) (err error) {
-	binary.LittleEndian.PutUint16(Self.buf[5:7], Self.length)
-	_, err = writer.Write(Self.buf[:7])
-	if err != nil {
-		return
-	}
-	_, err = writer.Write(Self.content[:Self.length])
 	return
 }
 
@@ -103,21 +94,50 @@ func (Self *muxPackager) Set(flag uint8, id int32, content interface{}) (err err
 }
 
 func (Self *muxPackager) Pack(writer io.Writer) (err error) {
+	bufs := Self.appendTo(nil)
+	_, err = bufs.WriteTo(writer)
+	Self.free()
+	return
+}
+
+// appendTo encodes the header and appends the packager's wire bytes to bufs,
+// so that several packagers go out in one writev. The slices alias the
+// packager's own buffers: free it only after bufs has been written.
+func (Self *muxPackager) appendTo(bufs net.Buffers) net.Buffers {
 	Self.buf = Self.buf[0:13]
 	Self.buf[0] = byte(Self.flag)
 	binary.LittleEndian.PutUint32(Self.buf[1:5], uint32(Self.id))
 	switch Self.flag {
 	case muxNewMsg, muxNewMsgPart, muxPingFlag, muxPingReturn:
-		err = Self.basePackager.Pack(writer)
-		windowBuff.Put(Self.content)
+		binary.LittleEndian.PutUint16(Self.buf[5:7], Self.length)
+		return append(bufs, Self.buf[:7], Self.content[:Self.length])
 	case muxMsgSendOk:
 		binary.LittleEndian.PutUint64(Self.buf[5:13], Self.window)
-		_, err = writer.Write(Self.buf[:13])
+		return append(bufs, Self.buf[:13])
 	default:
-		_, err = writer.Write(Self.buf[:5])
+		return append(bufs, Self.buf[:5])
+	}
+}
+
+// wireSize is the number of bytes appendTo puts on the wire.
+func (Self *muxPackager) wireSize() int {
+	switch Self.flag {
+	case muxNewMsg, muxNewMsgPart, muxPingFlag, muxPingReturn:
+		return 7 + int(Self.length)
+	case muxMsgSendOk:
+		return 13
+	default:
+		return 5
+	}
+}
+
+// free returns the packager's buffers to the pool once it has been written.
+func (Self *muxPackager) free() {
+	switch Self.flag {
+	case muxNewMsg, muxNewMsgPart, muxPingFlag, muxPingReturn:
+		windowBuff.Put(Self.content)
 	}
 	windowBuff.Put(Self.buf)
-	return
 }
 
 func (Self *muxPackager) UnPack(reader io.Reader) (n uint16, err error) {

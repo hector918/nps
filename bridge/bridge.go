@@ -159,6 +159,13 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 			})
 		}
 	}
+	// Tear the client down only if this is still its control connection.
+	// After a reconnect the entry holds the new session, and the old
+	// connection's read failing must not close the new signal and muxes.
+	if v, ok := s.Client.Load(id); ok && v.(*Client).signal != c {
+		_ = c.Close()
+		return
+	}
 	s.DelClient(id)
 }
 
@@ -267,6 +274,15 @@ func (s *Bridge) DelClient(id int) {
 	if v, ok := s.Client.Load(id); ok {
 		if v.(*Client).signal != nil {
 			v.(*Client).signal.Close()
+		}
+		// The muxes carry every open connection through this client. Left
+		// open they keep their sockets, goroutines and queued data until
+		// their own pings give up, minutes later.
+		if v.(*Client).tunnel != nil {
+			_ = v.(*Client).tunnel.Close()
+		}
+		if v.(*Client).file != nil {
+			_ = v.(*Client).file.Close()
 		}
 		s.Client.Delete(id)
 		if file.GetDb().IsPubClient(id) {

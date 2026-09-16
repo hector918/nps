@@ -11,114 +11,157 @@ import (
 	"unsafe"
 )
 
-type priorityQueue struct {
-	highestChain *bufChain
-	middleChain  *bufChain
-	lowestChain  *bufChain
-	starving     uint8
-	stop         bool
-	cond         *sync.Cond
+// streamQuantum is how many bytes one stream may put on the wire before the
+// next stream with data waiting gets a turn.
+const streamQuantum = 16 * 1024
+
+// streamQueueLimit is how much one stream may hold in the write queue before
+// its writer blocks. Blocking stops the copy loop from reading the stream's
+// source, so a producer faster than the link is held back at its own socket
+// instead of piling up in the mux.
+const streamQueueLimit = 256 * 1024
+
+// sendQueue orders the frames a mux writes to its connection. Pings go first,
+// so latency is measured without the queue in it, then control frames, which
+// are small and carry no stream data. Stream frames are queued per stream and
+// sent round robin, a quantum at a time, so a stream with a few bytes to send
+// waits for one quantum of a busy stream rather than for everything the busy
+// stream queued before it. Within a stream order is kept, which is what lets
+// a close frame share the stream's queue: it must never overtake the data
+// written before it.
+type sendQueue struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	ping    []*muxPackager
+	control []*muxPackager
+	streams map[int32]*streamQueue
+	active  []*streamQueue // streams holding frames, in turn order
+	stop    bool
 }
 
-func (Self *priorityQueue) New() {
-	Self.highestChain = new(bufChain)
-	Self.highestChain.new(4)
-	Self.middleChain = new(bufChain)
-	Self.middleChain.new(32)
-	Self.lowestChain = new(bufChain)
-	Self.lowestChain.new(256)
-	locker := new(sync.Mutex)
-	Self.cond = sync.NewCond(locker)
+type streamQueue struct {
+	id      int32
+	packs   []*muxPackager
+	bytes   int
+	deficit int
+	// drained is handed to a writer that took the stream past
+	// streamQueueLimit and is closed once half of it has been sent.
+	drained chan struct{}
 }
 
-func (Self *priorityQueue) Push(packager *muxPackager) {
-	Self.push(packager)
-	Self.cond.Broadcast()
+func (Self *sendQueue) New() {
+	Self.streams = make(map[int32]*streamQueue)
+	Self.cond = sync.NewCond(&Self.mu)
+}
+
+// Push queues a frame. For a stream frame that takes its stream past
+// streamQueueLimit it returns a channel the writer should wait on before
+// queueing more; otherwise nil. Push itself never blocks, so the read loop
+// can queue acknowledgements freely.
+func (Self *sendQueue) Push(packager *muxPackager) (drained <-chan struct{}) {
+	Self.mu.Lock()
+	switch packager.flag {
+	case muxPingFlag, muxPingReturn:
+		Self.ping = append(Self.ping, packager)
+	case muxNewMsg, muxNewMsgPart, muxConnClose:
+		stream := Self.streams[packager.id]
+		if stream == nil {
+			stream = &streamQueue{id: packager.id}
+			Self.streams[packager.id] = stream
+			Self.active = append(Self.active, stream)
+		}
+		stream.packs = append(stream.packs, packager)
+		stream.bytes += packager.wireSize()
+		if stream.bytes > streamQueueLimit && !Self.stop {
+			if stream.drained == nil {
+				stream.drained = make(chan struct{})
+			}
+			drained = stream.drained
+		}
+	default:
+		Self.control = append(Self.control, packager)
+	}
+	Self.mu.Unlock()
+	Self.cond.Signal()
 	return
 }
 
-func (Self *priorityQueue) push(packager *muxPackager) {
-	switch packager.flag {
-	case muxPingFlag, muxPingReturn:
-		Self.highestChain.pushHead(unsafe.Pointer(packager))
-	// the ping package need highest priority
-	// prevent ping calculation error
-	case muxNewConn, muxNewConnOk, muxNewConnFail:
-		// the New conn package need some priority too
-		Self.middleChain.pushHead(unsafe.Pointer(packager))
-	default:
-		Self.lowestChain.pushHead(unsafe.Pointer(packager))
-	}
-}
-
-const maxStarving uint8 = 8
-
-func (Self *priorityQueue) Pop() (packager *muxPackager) {
-	var iter bool
+// Pop blocks until a frame is queued, and returns nil once stopped.
+func (Self *sendQueue) Pop() (packager *muxPackager) {
+	Self.mu.Lock()
+	defer Self.mu.Unlock()
 	for {
-		packager = Self.TryPop()
-		if packager != nil {
+		if packager = Self.pop(); packager != nil {
 			return
 		}
-		if Self.stop {
-			return
-		}
-		if iter {
-			break
-			// trying to pop twice
-		}
-		iter = true
-		runtime.Gosched()
-	}
-	Self.cond.L.Lock()
-	defer Self.cond.L.Unlock()
-	for packager = Self.TryPop(); packager == nil; {
 		if Self.stop {
 			return
 		}
 		Self.cond.Wait()
-		// wait for it with no more iter
-		packager = Self.TryPop()
 	}
-	return
 }
 
-func (Self *priorityQueue) TryPop() (packager *muxPackager) {
-	ptr, ok := Self.highestChain.popTail()
-	if ok {
-		packager = (*muxPackager)(ptr)
-		return
-	}
-	if Self.starving < maxStarving {
-		// not pop too much, lowestChain will wait too long
-		ptr, ok = Self.middleChain.popTail()
-		if ok {
-			packager = (*muxPackager)(ptr)
-			Self.starving++
-			return
-		}
-	}
-	ptr, ok = Self.lowestChain.popTail()
-	if ok {
-		packager = (*muxPackager)(ptr)
-		if Self.starving > 0 {
-			Self.starving = Self.starving / 2
-		}
-		return
-	}
-	if Self.starving > 0 {
-		ptr, ok = Self.middleChain.popTail()
-		if ok {
-			packager = (*muxPackager)(ptr)
-			Self.starving++
-			return
-		}
-	}
-	return
+// TryPop returns the next frame, or nil if none is queued.
+func (Self *sendQueue) TryPop() (packager *muxPackager) {
+	Self.mu.Lock()
+	defer Self.mu.Unlock()
+	return Self.pop()
 }
 
-func (Self *priorityQueue) Stop() {
+func (Self *sendQueue) pop() *muxPackager {
+	if len(Self.ping) > 0 {
+		return popFront(&Self.ping)
+	}
+	if len(Self.control) > 0 {
+		return popFront(&Self.control)
+	}
+	if len(Self.active) == 0 {
+		return nil
+	}
+	stream := Self.active[0]
+	if stream.deficit <= 0 {
+		stream.deficit += streamQuantum
+	}
+	packager := popFront(&stream.packs)
+	size := packager.wireSize()
+	stream.bytes -= size
+	stream.deficit -= size
+	if stream.drained != nil && stream.bytes <= streamQueueLimit/2 {
+		close(stream.drained)
+		stream.drained = nil
+	}
+	switch {
+	case len(stream.packs) == 0:
+		// An emptied stream leaves the rotation and forfeits the rest of its
+		// quantum; it rejoins at the back when it next has data.
+		Self.active[0] = nil
+		Self.active = Self.active[1:]
+		delete(Self.streams, stream.id)
+	case stream.deficit <= 0:
+		Self.active[0] = nil
+		Self.active = append(Self.active[1:], stream)
+	}
+	return packager
+}
+
+func popFront(packs *[]*muxPackager) *muxPackager {
+	p := (*packs)[0]
+	(*packs)[0] = nil
+	*packs = (*packs)[1:]
+	return p
+}
+
+// Stop wakes Pop and every writer waiting for its stream to drain.
+func (Self *sendQueue) Stop() {
+	Self.mu.Lock()
 	Self.stop = true
+	for _, stream := range Self.streams {
+		if stream.drained != nil {
+			close(stream.drained)
+			stream.drained = nil
+		}
+	}
+	Self.mu.Unlock()
 	Self.cond.Broadcast()
 }
 
