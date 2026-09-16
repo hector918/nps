@@ -9,11 +9,10 @@
 # Run it before tagging, not after: the tag captures the tree as it is at that
 # commit, so docs fixed afterwards are not in the release anyone reads.
 #
-# The install one-liner in the READMEs names a tag on purpose -- it pipes a
-# script into a root shell, and a tag cannot move under it the way a branch
-# can. The cost of that choice is exactly this: something has to keep the
-# number current, or the docs quietly tell people to install the release
-# before last.
+# The install one-liner in the READMEs no longer names a tag: it takes the
+# script from the latest release's assets. What is left to keep current is
+# the examples and the docker image tags, which do name a release, and the
+# version a build from source reports.
 set -euo pipefail
 
 TAG=${1:-}

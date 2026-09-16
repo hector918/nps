@@ -45,12 +45,16 @@ nps是一款轻量级、高性能、功能强大的**内网穿透**代理服务�
 所以参数启动和配置文件启动都适用；替换后等隧道恢复，起不来就自动回滚：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.3-hz1/deploy/update.sh | sudo bash
+curl -fsSL https://github.com/hector918/nps/releases/latest/download/update.sh | sudo bash
 ```
 
-注意钉住 tag，不要指向 `master`。这条命令把脚本喂给 root shell，它指向哪个
-ref，哪个 ref 就握着所有跑过它的节点：tag 是固定的，分支是最后一次推上去的
-任何东西。
+它安装最新的 release，用的也是随该 release 一起发布的那份脚本。要装指定版本，
+在命令末尾加 `-s -- --tag vX.Y.Z-hzN`；要回退到上一个二进制，加
+`-s -- --rollback`。
+
+脚本要从 release 取，不要从 `master` 取。这条命令把脚本喂给 root shell，脚本
+从哪里来，哪里就握着所有跑过它的节点：release 附件在构建时就定下了，分支是
+最后一次推上去的任何东西。
 
 跑在容器里的节点不走这条路，见 [deploy/docker](deploy/docker)。
 

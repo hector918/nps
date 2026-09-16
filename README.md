@@ -40,12 +40,17 @@ whether the node was started from flags or from a config file -- then waits
 for the tunnel to come back and rolls back if it does not:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hector918/nps/v0.27.3-hz1/deploy/update.sh | sudo bash
+curl -fsSL https://github.com/hector918/nps/releases/latest/download/update.sh | sudo bash
 ```
 
-Pin the tag rather than pointing at `master`. This pipes a script into a root
-shell, so whichever ref it names holds the keys to every node that runs it: a
-tag is fixed, a branch is whatever was pushed to it last.
+This installs the latest release, using the copy of the script published with
+that release. Append `-s -- --tag vX.Y.Z-hzN` to install a specific one, or
+`-s -- --rollback` to put the previous binary back.
+
+Take the script from a release, never from `master`. This pipes it into a root
+shell, so wherever it comes from holds the keys to every node that runs it: a
+release asset is fixed when the release is built, a branch is whatever was
+pushed to it last.
 
 A node running in a container is not updated this way -- see
 [deploy/docker](deploy/docker).

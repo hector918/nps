@@ -2,7 +2,7 @@
 #
 # One command to replace a running npc or nps with a release build.
 #
-#   curl -fsSL https://raw.githubusercontent.com/hector918/nps/<tag>/deploy/update.sh | sudo bash
+#   curl -fsSL https://github.com/hector918/nps/releases/latest/download/update.sh | sudo bash
 #   sudo update.sh --tag v0.27.3-hz1     pin a release instead of taking the latest
 #   sudo update.sh --file /tmp/npc       install a binary already on this host
 #   sudo update.sh --rollback            put the previous binary back
@@ -12,8 +12,9 @@
 # npc.conf are left exactly as they are, so a node started with -config= and a
 # node started with bare flags need no special handling.
 #
-# Fetch this script from a tag rather than from master: piping it to a root
-# shell hands every node to whoever can write to the branch it came from.
+# Every release carries this script as an asset, which is where the command
+# above takes it from. Never fetch it from master: piping it to a root shell
+# hands every node to whoever can write to the branch it came from.
 set -euo pipefail
 
 REPO=${REPO:-hector918/nps}
@@ -31,7 +32,7 @@ usage() {
     cat <<'USAGE'
 update.sh -- replace a running npc or nps with a release build
 
-  curl -fsSL https://raw.githubusercontent.com/hector918/nps/<tag>/deploy/update.sh | sudo bash
+  curl -fsSL https://github.com/hector918/nps/releases/latest/download/update.sh | sudo bash
   ... | sudo bash -s -- --tag v0.27.3-hz1   install a specific release
   ... | sudo bash -s -- --rollback          put the previous binary back
 

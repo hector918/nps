@@ -47,7 +47,7 @@ jobs:
         continue-on-error: true
         run: |
           missing=0
-          for f in README.md README_zh.md deploy/docker/README.md; do
+          for f in deploy/docker/README.md; do
             grep -q "$GITHUB_REF_NAME" "$f" || {
               echo "::warning file=$f::still points at another release; run deploy/bump-version.sh $GITHUB_REF_NAME before tagging"
               missing=1
@@ -63,6 +63,10 @@ jobs:
       - name: Upload
         uses: softprops/action-gh-release@v2
         with:
+          # update.sh rides along so the install one-liner can take it from
+          # releases/latest/download: always current, and fixed per release
+          # rather than tracking a branch.
           files: |
             dist/*.tar.gz
             dist/sha256sums.txt
+            deploy/update.sh
