@@ -71,7 +71,8 @@ func DealBridgeTask() {
 			logs.Trace("New secret connection, addr", s.Conn.Conn.RemoteAddr())
 			if t := file.GetDb().GetTaskByMd5Password(s.Password); t != nil {
 				if t.Status {
-					go proxy.NewBaseServer(Bridge, t).DealClient(s.Conn, t.Client, t.Target.TargetStr, nil, common.CONN_TCP, nil, t.Flow, t.Target.LocalProxy)
+					target := t.GetTarget()
+					go proxy.NewBaseServer(Bridge, t).DealClient(s.Conn, t.Client, target.TargetStr, nil, common.CONN_TCP, nil, t.Flow, target.LocalProxy)
 				} else {
 					s.Conn.Close()
 					logs.Trace("This key %s cannot be processed,status is close", s.Password)

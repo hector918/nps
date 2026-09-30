@@ -39,4 +39,7 @@ func TestHasTunnel(t *testing.T) {
 			t.Errorf("%s: HasTunnel = %v, want %v", c.name, got, c.want)
 		}
 	}
+	if own := owner.OwnTunnel(&Tunnel{Mode: "secret", Password: "s1"}); own == nil || own.Id != 101 {
+		t.Errorf("OwnTunnel(own secret key) = %v, want tunnel 101", own)
+	}
 }

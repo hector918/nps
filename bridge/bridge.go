@@ -583,7 +583,20 @@ loop:
 					tl.LocalPath = t.LocalPath
 					tl.StripPre = t.StripPre
 					tl.MultiAccount = t.MultiAccount
-					if !client.HasTunnel(tl) {
+					if own := client.OwnTunnel(tl); own != nil {
+						// The client is registering a key it already owns,
+						// from a session the server has not seen end or one
+						// whose reply was lost. Take the target from this
+						// registration, so an edited npc.conf is not ignored
+						// until the old tunnel happens to be cleaned up. A
+						// tunnel made in the web UI keeps its own target.
+						if own.IsKeyed() && own.NoStore {
+							if old := own.GetTarget(); old == nil || old.TargetStr != tl.Target.TargetStr || old.LocalProxy != tl.Target.LocalProxy {
+								logs.Info("task %s: target changed to %s on re-registration", own.Remark, tl.Target.TargetStr)
+								own.SetTarget(tl.Target)
+							}
+						}
+					} else {
 						if err := file.GetDb().NewTask(tl); err != nil {
 							logs.Notice("Add task error ", err.Error())
 							fail = true
