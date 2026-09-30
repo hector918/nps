@@ -6,9 +6,9 @@ import (
 	"log"
 	"math"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -52,7 +52,7 @@ func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 	//c.(*net.TCPConn).SetReadBuffer(0)
 	//c.(*net.TCPConn).SetWriteBuffer(0)
 	tuneTCP(c)
-	fd, err := getConnFd(c)
+	raw, err := getRawConn(c)
 	if err != nil {
 		log.Println(err)
 	}
@@ -72,7 +72,7 @@ func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 		id:                 0,
 		closeChan:          make(chan struct{}, 1),
 		newConnCh:          make(chan *conn),
-		bw:                 NewBandwidth(fd),
+		bw:                 NewBandwidth(raw),
 		IsClose:            false,
 		connType:           connType,
 		pingCh:             make(chan []byte),
@@ -401,12 +401,12 @@ type bandwidth struct {
 	readStart     time.Time
 	lastReadStart time.Time
 	bufLength     uint32
-	fd            *os.File
+	raw           syscall.RawConn
 	calcThreshold uint32
 }
 
-func NewBandwidth(fd *os.File) *bandwidth {
-	return &bandwidth{fd: fd}
+func NewBandwidth(raw syscall.RawConn) *bandwidth {
+	return &bandwidth{raw: raw}
 }
 
 func (Self *bandwidth) StartRead() {
@@ -425,7 +425,7 @@ func (Self *bandwidth) SetCopySize(n uint16) {
 
 func (Self *bandwidth) calcBandWidth() {
 	t := Self.readStart.Sub(Self.lastReadStart)
-	bufferSize, err := sysGetSock(Self.fd)
+	bufferSize, err := sysGetSock(Self.raw)
 	if err != nil {
 		log.Println(err)
 		Self.bufLength = 0
