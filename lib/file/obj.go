@@ -88,10 +88,19 @@ func (s *Client) GetConn() bool {
 	return false
 }
 
+// HasTunnel reports whether this client already owns the tunnel t would
+// create. Secret and p2p tunnels have no port, so they are the same tunnel
+// when the key matches. Without that, a key left behind by a registration
+// whose client never came up again can only ever be refused as a duplicate,
+// and nothing removes it while this client stays offline.
 func (s *Client) HasTunnel(t *Tunnel) (exist bool) {
+	keyed := t.Mode == "secret" || t.Mode == "p2p"
 	GetDb().JsonDb.Tasks.Range(func(key, value interface{}) bool {
 		v := value.(*Tunnel)
-		if v.Client.Id == s.Id && v.Port == t.Port && t.Port != 0 {
+		if v.Client.Id != s.Id {
+			return true
+		}
+		if (t.Port != 0 && v.Port == t.Port) || (keyed && v.Mode == t.Mode && v.Password == t.Password) {
 			exist = true
 			return false
 		}
