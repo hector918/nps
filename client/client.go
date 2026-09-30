@@ -32,6 +32,7 @@ type TRPClient struct {
 	cnf            *config.Config
 	disconnectTime int
 	once           sync.Once
+	closed         chan struct{}
 }
 
 //new client
@@ -45,6 +46,7 @@ func NewRPClient(svraddr string, vKey string, bridgeConnType string, proxyUrl st
 		cnf:            cnf,
 		disconnectTime: disconnectTime,
 		once:           sync.Once{},
+		closed:         make(chan struct{}),
 	}
 }
 
@@ -304,14 +306,18 @@ func (s *TRPClient) handleUdp(serverConn net.Conn) {
 // Whether the monitor channel is closed
 func (s *TRPClient) ping() {
 	s.ticker = time.NewTicker(time.Second * 5)
-loop:
 	for {
 		select {
 		case <-s.ticker.C:
 			if s.tunnel != nil && s.tunnel.IsClose {
 				s.Close()
-				break loop
+				return
 			}
+		case <-s.closed:
+			// Closed from elsewhere. closing stops the ticker, so without
+			// this case the loop would wait on it forever, one goroutine
+			// per lost session.
+			return
 		}
 	}
 }
@@ -323,6 +329,7 @@ func (s *TRPClient) Close() {
 func (s *TRPClient) closing() {
 	CloseClient = true
 	NowStatus = 0
+	close(s.closed)
 	if s.tunnel != nil {
 		_ = s.tunnel.Close()
 	}

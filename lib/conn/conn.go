@@ -312,9 +312,11 @@ func (s *Conn) WriteChan() (int, error) {
 	return s.Write([]byte(common.WORK_CHAN))
 }
 
-//get task or host result of add
-func (s *Conn) GetAddStatus() (b bool) {
-	binary.Read(s.Conn, binary.LittleEndian, &b)
+// GetAddStatus reads the server's verdict on the last item sent. A read
+// error is returned rather than folded into false: a connection lost before
+// the reply is not a refusal, and the server may well have added the item.
+func (s *Conn) GetAddStatus() (b bool, err error) {
+	err = binary.Read(s.Conn, binary.LittleEndian, &b)
 	return
 }
 

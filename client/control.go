@@ -121,15 +121,18 @@ re:
 		// send global configuration to server and get status of config setting
 		if _, err := c.SendInfo(cnf.CommonConfig.Client, common.NEW_CONF); err != nil {
 			logs.Error(err)
+			c.Close()
 			goto re
 		}
-		if !c.GetAddStatus() {
-			logs.Error("the web_user may have been occupied!")
+		if ok, err := c.GetAddStatus(); err != nil || !ok {
+			logAddFail(err, "the web_user may have been occupied!")
+			c.Close()
 			goto re
 		}
 
 		if b, err = c.GetShortContent(16); err != nil {
 			logs.Error(err)
+			c.Close()
 			goto re
 		}
 		vkey = string(b)
@@ -140,10 +143,12 @@ re:
 	for _, v := range cnf.Hosts {
 		if _, err := c.SendInfo(v, common.NEW_HOST); err != nil {
 			logs.Error(err)
+			c.Close()
 			goto re
 		}
-		if !c.GetAddStatus() {
-			logs.Error(errAdd, v.Host)
+		if ok, err := c.GetAddStatus(); err != nil || !ok {
+			logAddFail(err, errAdd, v.Host)
+			c.Close()
 			goto re
 		}
 	}
@@ -152,10 +157,12 @@ re:
 	for _, v := range cnf.Tasks {
 		if _, err := c.SendInfo(v, common.NEW_TASK); err != nil {
 			logs.Error(err)
+			c.Close()
 			goto re
 		}
-		if !c.GetAddStatus() {
-			logs.Error(errAdd, v.Ports, v.Remark)
+		if ok, err := c.GetAddStatus(); err != nil || !ok {
+			logAddFail(err, errAdd, v.Ports, v.Remark)
+			c.Close()
 			goto re
 		}
 		if v.Mode == "file" {
@@ -178,6 +185,16 @@ re:
 	NewRPClient(cnf.CommonConfig.Server, vkey, cnf.CommonConfig.Tp, cnf.CommonConfig.ProxyUrl, cnf, cnf.CommonConfig.DisconnectTime).Start()
 	CloseLocalServer()
 	goto re
+}
+
+// logAddFail tells a refusal from the server apart from a connection that
+// died before its reply arrived; both used to be logged as a refusal.
+func logAddFail(err error, refused interface{}, detail ...interface{}) {
+	if err != nil {
+		logs.Error("lost the connection while waiting for the server's reply:", err)
+		return
+	}
+	logs.Error(refused, detail...)
 }
 
 // Create a new connection with the server and verify it
@@ -216,6 +233,21 @@ func NewConn(tp string, vkey string, server string, connType string, proxyUrl st
 	}
 	connection.SetDeadline(time.Now().Add(time.Second * 10))
 	defer connection.SetDeadline(time.Time{})
+	c, err := handshake(connection, vkey, connType)
+	if err != nil {
+		// A link that connects but then fails the handshake is the normal
+		// case on a flapping network; each attempt would otherwise leave a
+		// socket behind in CLOSE-WAIT.
+		connection.Close()
+		return nil, err
+	}
+	c.SetAlive(tp)
+	return c, nil
+}
+
+// handshake runs the version check and vkey verification on a fresh
+// connection and announces what it is for.
+func handshake(connection net.Conn, vkey string, connType string) (*conn.Conn, error) {
 	c := conn.NewConn(connection)
 	if _, err := c.Write([]byte(common.CONN_TEST)); err != nil {
 		return nil, err
@@ -233,7 +265,7 @@ func NewConn(tp string, vkey string, server string, connType string, proxyUrl st
 	}
 	if crypt.Md5(version.GetVersion()) != string(b) {
 		logs.Error("The client does not match the server version. The current core version of the client is", version.GetVersion())
-		return nil, err
+		return nil, errors.New("server core version mismatch")
 	}
 	if _, err := c.Write([]byte(common.Getverifyval(vkey))); err != nil {
 		return nil, err
@@ -246,8 +278,6 @@ func NewConn(tp string, vkey string, server string, connType string, proxyUrl st
 	if _, err := c.Write([]byte(connType)); err != nil {
 		return nil, err
 	}
-	c.SetAlive(tp)
-
 	return c, nil
 }
 
