@@ -199,5 +199,6 @@ func (s *ClientController) Del() {
 	}
 	server.DelTunnelAndHostByClientId(id, false)
 	server.DelClientConnect(id)
+	server.Bridge.ForgetStats(id)
 	s.AjaxOk("delete success")
 }

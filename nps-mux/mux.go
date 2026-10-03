@@ -46,9 +46,21 @@ type Mux struct {
 	writeQueue         sendQueue
 	newConnQueue       connQueue
 	closeOnce          sync.Once
+	statsSrc           func() []byte // client side: returns the record to ride on a ping, or nil
+	statsSink          func([]byte)  // server side: receives the record a peer's ping carried
+	statsAccepted      uint32        // client side: set once the server has said it takes stats
 }
 
 func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
+	return NewMuxStats(c, connType, pingCheckThreshold, nil, nil)
+}
+
+// NewMuxStats is NewMux with a stats record riding on the pings: src, when
+// set, supplies the record this side's pings carry (see StatsLen) once the
+// peer has said it takes stats, and sink, when set, receives the record of
+// every ping the peer sends and tells the peer that it does. Both have to be
+// given here because the first ping goes out before NewMux returns.
+func NewMuxStats(c net.Conn, connType string, pingCheckThreshold int, src func() []byte, sink func([]byte)) *Mux {
 	//c.(*net.TCPConn).SetReadBuffer(0)
 	//c.(*net.TCPConn).SetWriteBuffer(0)
 	tuneTCP(c)
@@ -78,6 +90,8 @@ func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 		pingCh:             make(chan []byte),
 		pingCheckThreshold: checkThreshold,
 		counter:            newLatencyCounter(),
+		statsSrc:           src,
+		statsSink:          sink,
 	}
 	m.writeQueue.New()
 	m.newConnQueue.New()
@@ -185,10 +199,24 @@ func (s *Mux) writeSession() {
 	}()
 }
 
+// sendPing sends one ping: the timestamp the peer echoes back for the
+// latency, behind the stats record when there is one to send.
+func (s *Mux) sendPing() {
+	now, _ := time.Now().UTC().MarshalText()
+	switch {
+	case s.statsSink != nil:
+		now = append([]byte{StatsAccept}, now...)
+	case s.statsSrc != nil && atomic.LoadUint32(&s.statsAccepted) == 1:
+		if rec := s.statsSrc(); len(rec) == StatsLen {
+			now = append(append(make([]byte, 0, StatsLen+len(now)), rec...), now...)
+		}
+	}
+	s.sendInfo(muxPingFlag, muxPing, now)
+}
+
 func (s *Mux) ping() {
 	go func() {
-		now, _ := time.Now().UTC().MarshalText()
-		s.sendInfo(muxPingFlag, muxPing, now)
+		s.sendPing()
 		// send the ping flag and Get the latency first
 		ticker := time.NewTicker(time.Second * 5)
 		defer ticker.Stop()
@@ -206,8 +234,7 @@ func (s *Mux) ping() {
 				// mux conn is damaged, maybe a packet drop, close it
 				break
 			}
-			now, _ = time.Now().UTC().MarshalText()
-			s.sendInfo(muxPingFlag, muxPing, now)
+			s.sendPing()
 			atomic.AddUint32(&s.pingCheckTime, 1)
 		}
 		return
@@ -224,9 +251,10 @@ func (s *Mux) ping() {
 			case data = <-s.pingCh:
 				atomic.StoreUint32(&s.pingCheckTime, 0)
 			case <-s.closeChan:
-				break
+				// nothing arrived: data is the last ping, already given back
+				return
 			}
-			_ = now.UnmarshalText(data)
+			_ = now.UnmarshalText(stripStats(data))
 			latency := time.Now().UTC().Sub(now).Seconds()
 			if latency > 0 {
 				atomic.StoreUint64(&s.latency, math.Float64bits(s.counter.Latency(latency)))
@@ -285,6 +313,15 @@ func (s *Mux) readSession() {
 				s.newConnQueue.Push(connection)
 				continue
 			case muxPingFlag: //ping
+				if s.statsSink != nil && hasStats(pack.content) {
+					s.statsSink(append([]byte(nil), pack.content[:StatsLen]...))
+				}
+				if s.statsSrc != nil && hasAccept(pack.content) &&
+					atomic.CompareAndSwapUint32(&s.statsAccepted, 0, 1) {
+					// the first ping went out before the server had spoken;
+					// send the record now instead of at the next tick
+					s.sendPing()
+				}
 				s.sendInfo(muxPingReturn, muxPing, pack.content)
 				windowBuff.Put(pack.content)
 				continue

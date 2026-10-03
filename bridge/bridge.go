@@ -17,6 +17,7 @@ import (
 	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/selfupdate"
+	"ehang.io/nps/lib/sysstat"
 	"ehang.io/nps/lib/version"
 	"ehang.io/nps/server/connection"
 	"ehang.io/nps/server/tool"
@@ -51,6 +52,7 @@ func NewClient(t, f *nps_mux.Mux, s *conn.Conn, vs string) *Client {
 type Bridge struct {
 	TunnelPort     int //通信隧道端口
 	Client         sync.Map
+	stats          sync.Map // client id -> *sysstat.History
 	Register       sync.Map
 	tunnelType     string //bridge type kcp or tcp
 	OpenTask       chan *file.Tunnel
@@ -270,6 +272,36 @@ func supportsUpdate(clientVersion string) bool {
 	return strings.Contains(clientVersion, version.ForkMarker)
 }
 
+// statsHistory is the host stats history of a client. It outlives the
+// client's connection, so a reconnect keeps what came before.
+func (s *Bridge) statsHistory(id int) *sysstat.History {
+	h, _ := s.stats.LoadOrStore(id, new(sysstat.History))
+	return h.(*sysstat.History)
+}
+
+// ClientStats returns the host stats a client has reported in the last
+// sysstat.Retention, oldest first; decode each record with sysstat.Decode.
+func (s *Bridge) ClientStats(id int) []sysstat.Point {
+	if h, ok := s.stats.Load(id); ok {
+		return h.(*sysstat.History).Points(time.Now())
+	}
+	return nil
+}
+
+// ForgetStats drops a client's stats history. It is for a client that is
+// gone for good: a disconnect keeps the history, so a reconnect continues it.
+func (s *Bridge) ForgetStats(id int) {
+	s.stats.Delete(id)
+}
+
+// ClientLastStats is the newest host stats record a client has reported.
+func (s *Bridge) ClientLastStats(id int) (sysstat.Point, bool) {
+	if h, ok := s.stats.Load(id); ok {
+		return h.(*sysstat.History).Last()
+	}
+	return sysstat.Point{}, false
+}
+
 func (s *Bridge) DelClient(id int) {
 	if v, ok := s.Client.Load(id); ok {
 		if v.(*Client).signal != nil {
@@ -320,7 +352,10 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		go s.GetHealthFromClient(id, c)
 		logs.Info("clientId %d connection succeeded, address:%s ", id, c.Conn.RemoteAddr())
 	case common.WORK_CHAN:
-		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
+		hist := s.statsHistory(id)
+		muxConn := nps_mux.NewMuxStats(c.Conn, s.tunnelType, s.disconnectTime, nil, func(rec []byte) {
+			hist.Add(time.Now(), rec)
+		})
 		if v, ok := s.Client.LoadOrStore(id, NewClient(muxConn, nil, nil, vs)); ok {
 			v.(*Client).tunnel = muxConn
 		}

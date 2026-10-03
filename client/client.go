@@ -18,6 +18,7 @@ import (
 	"ehang.io/nps/lib/conn"
 	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/selfupdate"
+	"ehang.io/nps/lib/sysstat"
 )
 
 type TRPClient struct {
@@ -184,7 +185,7 @@ func (s *TRPClient) newChan() {
 		logs.Error("connect to ", s.svrAddr, "error:", err)
 		return
 	}
-	s.tunnel = nps_mux.NewMux(tunnel.Conn, s.bridgeConnType, s.disconnectTime)
+	s.tunnel = nps_mux.NewMuxStats(tunnel.Conn, s.bridgeConnType, s.disconnectTime, sysstat.Latest, nil)
 	for {
 		src, err := s.tunnel.Accept()
 		if err != nil {

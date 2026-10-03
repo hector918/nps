@@ -63,6 +63,7 @@ func DealBridgeTask() {
 			if v, ok := file.GetDb().JsonDb.Clients.Load(id); ok {
 				if v.(*file.Client).NoStore {
 					file.GetDb().DelClient(id)
+					Bridge.ForgetStats(id)
 				}
 			}
 		case tunnel := <-Bridge.OpenTask:
