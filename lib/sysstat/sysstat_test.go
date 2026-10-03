@@ -1,7 +1,9 @@
 package sysstat
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -128,5 +130,57 @@ func TestEnergyBaselineFollowsWhilePowerReads(t *testing.T) {
 	r := g.read(t0.Add(4 * time.Second))
 	if r.Power != 10 {
 		t.Fatalf("power %v, want 10 over the last 2s", r.Power)
+	}
+}
+
+func TestParseNvidiaLine(t *testing.T) {
+	idx, g, ok := parseNvidiaLine("1, 4.95, 180.00")
+	if !ok || idx != 1 || g.Power != 4.95 || g.Limit != 180 {
+		t.Fatalf("got %d %+v %v", idx, g, ok)
+	}
+	_, g, ok = parseNvidiaLine("0, [N/A], [N/A]")
+	if !ok || g.Power != 0 || g.Limit != 0 {
+		t.Fatalf("n/a gave %+v %v", g, ok)
+	}
+	for _, bad := range []string{"", "NVIDIA-SMI has failed", "a, 1, 2", "1, 2"} {
+		if _, _, ok := parseNvidiaLine(bad); ok {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}
+
+// The stream keeps the latest line of every card, in index order, and a
+// command that never prints is given up on rather than restarted for ever.
+func TestNvidiaStream(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := startNvidia(ctx, sh, "-c", "printf '1, 30.5, 200.00\\n0, 4.95, 180.00\\n0, 6.00, 180.00\\n'; sleep 30")
+	var got []GPU
+	for i := 0; i < 100; i++ {
+		if got = n.read(time.Now()); len(got) == 2 && got[0].Power == 6 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(got) != 2 || got[0].Power != 6 || got[0].Limit != 180 || got[1].Power != 30.5 {
+		t.Fatalf("got %+v", got)
+	}
+	if got = n.read(time.Now().Add(time.Minute)); got[0].Power != 0 || got[0].Limit != 180 {
+		t.Fatalf("stale reading kept its power: %+v", got)
+	}
+}
+
+func TestNvidiaCardsLeftToNvidiaSmi(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "card0/device/vendor"), "0x10de\n")
+	write(t, filepath.Join(d, "card0/device/hwmon/hwmon1/power1_input"), "1\n")
+	write(t, filepath.Join(d, "card1/device/vendor"), "0x8086\n")
+	write(t, filepath.Join(d, "card1/device/hwmon/hwmon2/power1_input"), "1\n")
+	if c := newCollector(d); len(c.gpus) != 1 {
+		t.Fatalf("found %d, want only the Intel card", len(c.gpus))
 	}
 }

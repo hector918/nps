@@ -1,7 +1,9 @@
 package sysstat
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -30,6 +32,9 @@ var (
 func Latest() []byte {
 	startOnce.Do(func() {
 		c := newCollector("/sys/class/drm")
+		if path, err := exec.LookPath("nvidia-smi"); err == nil {
+			c.nvidia = startNvidia(context.Background(), path, nvidiaArgs...)
+		}
 		c.read() // the baseline for the CPU reads that follow
 		go func() {
 			for range time.Tick(SampleInterval) {
@@ -48,7 +53,8 @@ type gpuNode struct {
 }
 
 type collector struct {
-	gpus []*gpuNode
+	gpus   []*gpuNode
+	nvidia *nvidiaStream // nil without nvidia-smi
 }
 
 var cardRe = regexp.MustCompile(`^card\d+$`)
@@ -66,6 +72,11 @@ func newCollector(drmDir string) *collector {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		// NVIDIA's own driver has no hwmon power and nvidia-smi covers it; with
+		// nouveau there is some, and the card would count twice
+		if v, err := os.ReadFile(filepath.Join(drmDir, name, "device", "vendor")); err == nil && strings.TrimSpace(string(v)) == "0x10de" {
+			continue
+		}
 		dirs, _ := filepath.Glob(filepath.Join(drmDir, name, "device", "hwmon", "hwmon*"))
 		for _, d := range dirs {
 			if hasAny(d, "power1_input", "power1_average", "energy1_input") {
@@ -107,6 +118,9 @@ func (c *collector) read() Sample {
 	now := time.Now()
 	for _, g := range c.gpus {
 		s.GPUs = append(s.GPUs, g.read(now))
+	}
+	if c.nvidia != nil {
+		s.GPUs = append(s.GPUs, c.nvidia.read(now)...)
 	}
 	return s
 }
