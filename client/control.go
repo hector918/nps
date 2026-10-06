@@ -199,6 +199,117 @@ func logAddFail(err error, refused interface{}, detail ...interface{}) {
 
 // Create a new connection with the server and verify it
 func NewConn(tp string, vkey string, server string, connType string, proxyUrl string) (*conn.Conn, error) {
+	connection, err := dialServer(tp, server, proxyUrl)
+	if err != nil {
+		return nil, err
+	}
+	connection.SetDeadline(time.Now().Add(time.Second * 10))
+	defer connection.SetDeadline(time.Time{})
+	c, err := handshake(connection, vkey, connType)
+	if err != nil {
+		// A link that connects but then fails the handshake is the normal
+		// case on a flapping network; each attempt would otherwise leave a
+		// socket behind in CLOSE-WAIT.
+		connection.Close()
+		return nil, err
+	}
+	c.SetAlive(tp)
+	return c, nil
+}
+
+// NewConnPipelined is NewConn for a connection whose first bytes are known
+// up front, such as the key of a secret tunnel. The server reads the
+// handshake as a plain byte stream, so nothing obliges the client to wait for
+// its version reply before sending the vkey, or for the verdict on the vkey
+// before saying what the connection is for. Everything goes out in one write
+// and the replies are checked when the first of them is read, which saves two
+// round trips on every new connection. The server needs no change.
+//
+// Because the replies are not read here, a wrong vkey or version surfaces as
+// an error from the first Read on the returned connection instead of from
+// this call.
+func NewConnPipelined(tp string, vkey string, server string, connType string, proxyUrl string, first []byte) (*conn.Conn, error) {
+	connection, err := dialServer(tp, server, proxyUrl)
+	if err != nil {
+		return nil, err
+	}
+	hello, err := pipelinedHello(vkey, connType, first)
+	if err != nil {
+		connection.Close()
+		return nil, err
+	}
+	connection.SetWriteDeadline(time.Now().Add(time.Second * 10))
+	_, err = connection.Write(hello)
+	connection.SetWriteDeadline(time.Time{})
+	if err != nil {
+		connection.Close()
+		return nil, err
+	}
+	c := conn.NewConn(&verifyOnReadConn{Conn: connection, vkey: vkey})
+	return c, nil
+}
+
+// pipelinedHello lays out, in order, every byte handshake sends and then
+// first.
+func pipelinedHello(vkey string, connType string, first []byte) ([]byte, error) {
+	var out []byte
+	out = append(out, common.CONN_TEST...)
+	for _, v := range []string{version.GetVersion(), version.VERSION} {
+		b, err := conn.GetLenBytes([]byte(v))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	out = append(out, common.Getverifyval(vkey)...)
+	out = append(out, connType...)
+	return append(out, first...), nil
+}
+
+// verifyOnReadConn consumes the server's two handshake replies, the version
+// digest and the vkey verdict, ahead of the first byte of tunnel data.
+type verifyOnReadConn struct {
+	net.Conn
+	vkey     string
+	verified bool
+	err      error
+}
+
+func (v *verifyOnReadConn) Read(b []byte) (int, error) {
+	if !v.verified {
+		v.verified = true
+		v.err = v.verify()
+	}
+	if v.err != nil {
+		return 0, v.err
+	}
+	return v.Conn.Read(b)
+}
+
+func (v *verifyOnReadConn) verify() error {
+	v.Conn.SetReadDeadline(time.Now().Add(time.Second * 10))
+	defer v.Conn.SetReadDeadline(time.Time{})
+	c := conn.NewConn(v.Conn)
+	b, err := c.GetShortContent(32)
+	if err != nil {
+		return err
+	}
+	if crypt.Md5(version.GetVersion()) != string(b) {
+		logs.Error("The client does not match the server version. The current core version of the client is", version.GetVersion())
+		return errors.New("server core version mismatch")
+	}
+	if s, err := c.ReadFlag(); err != nil {
+		return err
+	} else if s == common.VERIFY_EER {
+		logs.Error("Validation key %s incorrect", v.vkey)
+		return errors.New(fmt.Sprintf("Validation key %s incorrect", v.vkey))
+	}
+	return nil
+}
+
+// dialServer opens the transport to the server, through the proxy if one is
+// configured.
+func dialServer(tp string, server string, proxyUrl string) (net.Conn, error) {
 	var err error
 	var connection net.Conn
 	var sess *kcp.UDPSession
@@ -231,18 +342,7 @@ func NewConn(tp string, vkey string, server string, connType string, proxyUrl st
 	if err != nil {
 		return nil, err
 	}
-	connection.SetDeadline(time.Now().Add(time.Second * 10))
-	defer connection.SetDeadline(time.Time{})
-	c, err := handshake(connection, vkey, connType)
-	if err != nil {
-		// A link that connects but then fails the handshake is the normal
-		// case on a flapping network; each attempt would otherwise leave a
-		// socket behind in CLOSE-WAIT.
-		connection.Close()
-		return nil, err
-	}
-	c.SetAlive(tp)
-	return c, nil
+	return connection, nil
 }
 
 // handshake runs the version check and vkey verification on a fresh

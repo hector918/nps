@@ -152,13 +152,11 @@ func handleUdpMonitor(config *config.CommonConfig, l *config.LocalServer) {
 }
 
 func handleSecret(localTcpConn net.Conn, config *config.CommonConfig, l *config.LocalServer) {
-	remoteConn, err := NewConn(config.Tp, config.VKey, config.Server, common.WORK_SECRET, config.ProxyUrl)
+	// The key goes out with the handshake, not after it: see NewConnPipelined.
+	remoteConn, err := NewConnPipelined(config.Tp, config.VKey, config.Server, common.WORK_SECRET, config.ProxyUrl, []byte(crypt.Md5(l.Password)))
 	if err != nil {
 		logs.Error("Local connection server failed ", err.Error())
-		return
-	}
-	if _, err := remoteConn.Write([]byte(crypt.Md5(l.Password))); err != nil {
-		logs.Error("Local connection server failed ", err.Error())
+		localTcpConn.Close()
 		return
 	}
 	conn.CopyWaitGroup(remoteConn.Conn, localTcpConn, false, false, nil, nil, false, nil)
