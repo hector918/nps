@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"crypto/tls"
 	"ehang.io/nps-mux"
 	"encoding/binary"
 	"errors"
@@ -12,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/conn"
-	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/selfupdate"
 	"ehang.io/nps/lib/sysstat"
@@ -62,6 +63,7 @@ type Bridge struct {
 	ipVerify       bool
 	runList        sync.Map //map[int]interface{}
 	disconnectTime int
+	tlsConfig      *tls.Config
 }
 
 func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList sync.Map, disconnectTime int) *Bridge {
@@ -79,24 +81,34 @@ func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList sync.Ma
 }
 
 func (s *Bridge) StartTunnel() error {
+	tlsConfig, err := bridgetls.ServerConfig()
+	if err != nil {
+		return fmt.Errorf("bridge TLS: %w", err)
+	}
+	s.tlsConfig = tlsConfig
 	go s.ping()
 	if s.tunnelType == "kcp" {
 		logs.Info("server start, the bridge type is %s, the bridge port is %d", s.tunnelType, s.TunnelPort)
-		return conn.NewKcpListenerAndProcess(beego.AppConfig.String("bridge_ip")+":"+beego.AppConfig.String("bridge_port"), func(c net.Conn) {
-			s.cliProcess(conn.NewConn(c))
-		})
-	} else {
-		listener, err := connection.GetBridgeListener(s.tunnelType)
-		if err != nil {
-			logs.Error(err)
-			os.Exit(0)
-			return err
-		}
-		conn.Accept(listener, func(c net.Conn) {
-			s.cliProcess(conn.NewConn(c))
-		})
+		return conn.NewKcpListenerAndProcess(beego.AppConfig.String("bridge_ip")+":"+beego.AppConfig.String("bridge_port"), s.serve)
 	}
+	listener, err := connection.GetBridgeListener(s.tunnelType)
+	if err != nil {
+		logs.Error(err)
+		os.Exit(0)
+		return err
+	}
+	conn.Accept(listener, s.serve)
 	return nil
+}
+
+// serve secures a freshly accepted connection and hands it on.
+func (s *Bridge) serve(c net.Conn) {
+	t, err := bridgetls.Server(c, s.tlsConfig)
+	if err != nil {
+		logs.Info("TLS handshake with %s failed: %s", c.RemoteAddr(), err.Error())
+		return
+	}
+	s.cliProcess(conn.NewConn(t))
 }
 
 //get health information form client
@@ -171,59 +183,69 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	s.DelClient(id)
 }
 
-//验证失败，返回错误验证flag，并且关闭连接
-func (s *Bridge) verifyError(c *conn.Conn) {
-	c.Write([]byte(common.VERIFY_EER))
-}
-
-func (s *Bridge) verifySuccess(c *conn.Conn) {
-	c.Write([]byte(common.VERIFY_SUCCESS))
-}
-
+// cliProcess reads the hello of a connection that is already TLS: the protocol
+// revision, the client's version, what the connection is for, and a proof that
+// the client holds the vkey of one of the clients here. The proof is an HMAC
+// bound to this TLS session, see bridgetls, so it names no key and cannot be
+// carried to another session. The answer is a verdict and, on success, the
+// server's own proof, which is how the client learns that it is talking to the
+// server and not to something in between. Nothing the client does next is
+// sent before it has checked it.
 func (s *Bridge) cliProcess(c *conn.Conn) {
-	//read test flag
-	if _, err := c.GetShortContent(3); err != nil {
-		logs.Info("The client %s connect error", c.Conn.RemoteAddr(), err.Error())
-		return
-	}
-	//version check
-	if b, err := c.GetShortLenContent(); err != nil || string(b) != version.GetVersion() {
-		logs.Info("The client %s version does not match", c.Conn.RemoteAddr())
-		c.Close()
-		return
-	}
-	//version get
-	var vs []byte
-	var err error
-	if vs, err = c.GetShortLenContent(); err != nil {
-		logs.Info("get client %s version error", err.Error())
-		c.Close()
-		return
-	}
-	//write server version to client
-	c.Write([]byte(crypt.Md5(version.GetVersion())))
-	c.SetReadDeadlineBySecond(5)
-	var buf []byte
-	//get vKey from client
-	if buf, err = c.GetShortContent(32); err != nil {
-		c.Close()
-		return
-	}
-	//verify
-	id, err := file.GetDb().GetIdByVerifyKey(string(buf), c.Conn.RemoteAddr().String())
+	ip := common.GetIpByAddr(c.Conn.RemoteAddr().String())
+	c.SetReadDeadlineBySecond(10)
+	protocol, err := c.GetShortLenContent()
 	if err != nil {
-		logs.Info("Current client connection validation error, close this client:", c.Conn.RemoteAddr())
-		s.verifyError(c)
+		logs.Info("The client %s connect error %s", c.Conn.RemoteAddr(), err.Error())
+		c.Close()
 		return
-	} else {
-		s.verifySuccess(c)
 	}
-	if flag, err := c.ReadFlag(); err == nil {
-		s.typeDeal(flag, c, id, string(vs))
-	} else {
+	if string(protocol) != version.Protocol {
+		// Judged before anything else is read: a client of another revision may
+		// lay out the rest of its hello differently, and would leave this
+		// reading until the deadline instead of hearing why.
+		logs.Info("The client %s speaks protocol %q, this server %q", c.Conn.RemoteAddr(), protocol, version.Protocol)
+		c.Write([]byte(common.VERIFY_PROTOCOL))
+		c.Close()
+		return
+	}
+	vs, err := c.GetShortLenContent()
+	if err != nil {
+		logs.Info("get client %s version error %s", c.Conn.RemoteAddr(), err.Error())
+		c.Close()
+		return
+	}
+	flag, err := c.ReadFlag()
+	if err != nil {
 		logs.Warn(err, flag)
+		c.Close()
+		return
 	}
-	return
+	proof, err := c.GetShortContent(bridgetls.ProofLen)
+	if err != nil {
+		c.Close()
+		return
+	}
+	exporter, err := bridgetls.Exporter(c.Conn)
+	if err != nil {
+		logs.Warn(err)
+		c.Close()
+		return
+	}
+	hello := bridgetls.Hello(string(protocol), string(vs), flag)
+	id, vkey, err := file.GetDb().FindClientByProof(func(k string) bool {
+		return bridgetls.Equal(bridgetls.ClientProof(k, exporter, hello), proof)
+	}, c.Conn.RemoteAddr().String())
+	if err != nil {
+		raise("unknown-key", ip, 0, "a connection proved no vkey that any enabled client here holds: a wrong or disabled key, a scanner, or someone relaying a client's session")
+		c.Write([]byte(common.VERIFY_EER))
+		c.Close()
+		return
+	}
+	c.Write(append([]byte(common.VERIFY_SUCCESS), bridgetls.ServerProof(vkey, exporter, proof)...))
+	warnWeakVkey(id, vkey, ip)
+	c.SetAlive()
+	s.typeDeal(flag, c, id, string(vs))
 }
 
 // SendUpdate asks a connected client to replace its own binary. Only the
@@ -247,16 +269,6 @@ func (s *Bridge) SendUpdate(id int, tag string) error {
 	if c.signal == nil {
 		return errors.New("the client has no control connection")
 	}
-	// A client that predates WORK_UPDATE has no default case in its control
-	// loop: it would read the tag's length prefix as the next flag and stay
-	// misaligned for the rest of the connection. Since a fleet is entirely
-	// old clients on the day this ships, refusing is the difference between
-	// "the button does nothing yet" and "the button breaks every node's
-	// control channel one at a time".
-	if !supportsUpdate(c.Version) {
-		return errors.New("this client is too old to accept a pushed update, update it in place first")
-	}
-
 	c.signalMu.Lock()
 	defer c.signalMu.Unlock()
 	if _, err := c.signal.Write([]byte(common.WORK_UPDATE)); err != nil {
@@ -264,12 +276,6 @@ func (s *Bridge) SendUpdate(id int, tag string) error {
 	}
 	// The tag is always written, empty meaning the latest release.
 	return c.signal.WriteLenContent([]byte(tag))
-}
-
-// supportsUpdate reports whether a client's reported version is one of ours,
-// which is what the fork marker in version.VERSION is for.
-func supportsUpdate(clientVersion string) bool {
-	return strings.Contains(clientVersion, version.ForkMarker)
 }
 
 // statsHistory is the host stats history of a client. It outlives the
@@ -335,7 +341,7 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			c.Close()
 			return
 		}
-		tcpConn, ok := c.Conn.(*net.TCPConn)
+		tcpConn, ok := bridgetls.TCPConn(c.Conn)
 		if ok {
 			// add tcp keep alive option for signal connection
 			_ = tcpConn.SetKeepAlive(true)
@@ -343,8 +349,13 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		}
 		//the vKey connect by another ,close the client of before
 		if v, ok := s.Client.LoadOrStore(id, NewClient(nil, nil, c, vs)); ok {
-			if v.(*Client).signal != nil {
-				v.(*Client).signal.WriteClose()
+			if old := v.(*Client).signal; old != nil {
+				// the same vkey from another address while the first is still
+				// here is a client started twice, or a key that has got out
+				if oldIP, newIP := common.GetIpByAddr(old.Conn.RemoteAddr().String()), common.GetIpByAddr(c.Conn.RemoteAddr().String()); oldIP != newIP {
+					raise("duplicate", newIP, id, fmt.Sprintf("client %d connected from %s while still connected from %s; the first is dropped. A client that changed network and has not been noticed gone looks the same, as does a client started twice or a vkey that got out", id, newIP, oldIP))
+				}
+				old.WriteClose()
 			}
 			v.(*Client).signal = c
 			v.(*Client).Version = vs
@@ -408,7 +419,7 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			}
 		}
 	}
-	c.SetAlive(s.tunnelType)
+	c.SetAlive()
 	return
 }
 
@@ -496,7 +507,7 @@ func (s *Bridge) ping() {
 	}
 }
 
-//get config and add task from client config
+// get config and add task from client config
 func (s *Bridge) getConfig(c *conn.Conn, isPub bool, client *file.Client) {
 	var fail bool
 loop:

@@ -236,7 +236,7 @@ func run() {
 	if *verifyKey == "" {
 		*verifyKey, _ = env["NPC_SERVER_VKEY"]
 	}
-	logs.Info("the version of client is %s, the core version of client is %s", version.VERSION, version.GetVersion())
+	logs.Info("the version of client is %s, the protocol is %s", version.VERSION, version.Protocol)
 	// Arm the update watchdog only here, past the local-server branch above.
 	// That branch never connects to a server and so never confirms, and an
 	// unconfirmable start would roll a perfectly good binary back.

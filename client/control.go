@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/config"
 	"ehang.io/nps/lib/conn"
@@ -199,112 +201,66 @@ func logAddFail(err error, refused interface{}, detail ...interface{}) {
 
 // Create a new connection with the server and verify it
 func NewConn(tp string, vkey string, server string, connType string, proxyUrl string) (*conn.Conn, error) {
-	connection, err := dialServer(tp, server, proxyUrl)
+	raw, err := dialServer(tp, server, proxyUrl)
 	if err != nil {
 		return nil, err
 	}
-	connection.SetDeadline(time.Now().Add(time.Second * 10))
-	defer connection.SetDeadline(time.Time{})
-	c, err := handshake(connection, vkey, connType)
+	secured, err := bridgetls.Client(raw, bridgetls.ClientConfig())
 	if err != nil {
 		// A link that connects but then fails the handshake is the normal
-		// case on a flapping network; each attempt would otherwise leave a
-		// socket behind in CLOSE-WAIT.
-		connection.Close()
+		// case on a flapping network; bridgetls has closed the socket.
 		return nil, err
 	}
-	c.SetAlive(tp)
+	c, err := authenticate(secured, vkey, connType)
+	if err != nil {
+		secured.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
-// NewConnPipelined is NewConn for a connection whose first bytes are known
-// up front, such as the key of a secret tunnel. The server reads the
-// handshake as a plain byte stream, so nothing obliges the client to wait for
-// its version reply before sending the vkey, or for the verdict on the vkey
-// before saying what the connection is for. Everything goes out in one write
-// and the replies are checked when the first of them is read, which saves two
-// round trips on every new connection. The server needs no change.
-//
-// Because the replies are not read here, a wrong vkey or version surfaces as
-// an error from the first Read on the returned connection instead of from
-// this call.
-func NewConnPipelined(tp string, vkey string, server string, connType string, proxyUrl string, first []byte) (*conn.Conn, error) {
-	connection, err := dialServer(tp, server, proxyUrl)
+// authenticate runs the proofs over a fresh TLS connection. TLS here only
+// encrypts, the server's certificate is not checked, so until the server has
+// proved that it holds the vkey nothing but the hello and the client's proof
+// is sent to it. The proof is not the vkey, but it is enough for whoever
+// answers to guess a weak vkey offline, see bridgetls.
+func authenticate(secured *tls.Conn, vkey string, connType string) (*conn.Conn, error) {
+	exporter, err := bridgetls.Exporter(secured)
 	if err != nil {
 		return nil, err
 	}
-	hello, err := pipelinedHello(vkey, connType, first)
-	if err != nil {
-		connection.Close()
+	hello := bridgetls.Hello(version.Protocol, version.VERSION, connType)
+	proof := bridgetls.ClientProof(vkey, exporter, hello)
+	secured.SetDeadline(time.Now().Add(time.Second * 10))
+	defer secured.SetDeadline(time.Time{})
+	if _, err := secured.Write(append(hello, proof...)); err != nil {
 		return nil, err
 	}
-	connection.SetWriteDeadline(time.Now().Add(time.Second * 10))
-	_, err = connection.Write(hello)
-	connection.SetWriteDeadline(time.Time{})
+	c := conn.NewConn(secured)
+	flag, err := c.ReadFlag()
 	if err != nil {
-		connection.Close()
 		return nil, err
 	}
-	c := conn.NewConn(&verifyOnReadConn{Conn: connection, vkey: vkey})
+	switch flag {
+	case common.VERIFY_SUCCESS:
+	case common.VERIFY_EER:
+		// The vkey stays out of the message: it is the one secret, and logs get shared.
+		return nil, errors.New("the server did not accept the vkey: it is wrong, or the client is disabled, or something between here and the server is relaying the connection")
+	case common.VERIFY_PROTOCOL:
+		return nil, errors.New("the server speaks another protocol revision than this client (" + version.Protocol + "): update both to the same release")
+	default:
+		return nil, fmt.Errorf("unexpected reply %q from the server", flag)
+	}
+	got, err := c.GetShortContent(bridgetls.ProofLen)
+	if err != nil {
+		return nil, err
+	}
+	if !bridgetls.Equal(got, bridgetls.ServerProof(vkey, exporter, proof)) {
+		err := errors.New("ALERT: the server did not prove that it holds the vkey: whatever answered is not the server, and may be a man in the middle")
+		logs.Error(err)
+		return nil, err
+	}
 	return c, nil
-}
-
-// pipelinedHello lays out, in order, every byte handshake sends and then
-// first.
-func pipelinedHello(vkey string, connType string, first []byte) ([]byte, error) {
-	var out []byte
-	out = append(out, common.CONN_TEST...)
-	for _, v := range []string{version.GetVersion(), version.VERSION} {
-		b, err := conn.GetLenBytes([]byte(v))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, b...)
-	}
-	out = append(out, common.Getverifyval(vkey)...)
-	out = append(out, connType...)
-	return append(out, first...), nil
-}
-
-// verifyOnReadConn consumes the server's two handshake replies, the version
-// digest and the vkey verdict, ahead of the first byte of tunnel data.
-type verifyOnReadConn struct {
-	net.Conn
-	vkey     string
-	verified bool
-	err      error
-}
-
-func (v *verifyOnReadConn) Read(b []byte) (int, error) {
-	if !v.verified {
-		v.verified = true
-		v.err = v.verify()
-	}
-	if v.err != nil {
-		return 0, v.err
-	}
-	return v.Conn.Read(b)
-}
-
-func (v *verifyOnReadConn) verify() error {
-	v.Conn.SetReadDeadline(time.Now().Add(time.Second * 10))
-	defer v.Conn.SetReadDeadline(time.Time{})
-	c := conn.NewConn(v.Conn)
-	b, err := c.GetShortContent(32)
-	if err != nil {
-		return err
-	}
-	if crypt.Md5(version.GetVersion()) != string(b) {
-		logs.Error("The client does not match the server version. The current core version of the client is", version.GetVersion())
-		return errors.New("server core version mismatch")
-	}
-	if s, err := c.ReadFlag(); err != nil {
-		return err
-	} else if s == common.VERIFY_EER {
-		logs.Error("Validation key %s incorrect", v.vkey)
-		return errors.New(fmt.Sprintf("Validation key %s incorrect", v.vkey))
-	}
-	return nil
 }
 
 // dialServer opens the transport to the server, through the proxy if one is
@@ -343,42 +299,6 @@ func dialServer(tp string, server string, proxyUrl string) (net.Conn, error) {
 		return nil, err
 	}
 	return connection, nil
-}
-
-// handshake runs the version check and vkey verification on a fresh
-// connection and announces what it is for.
-func handshake(connection net.Conn, vkey string, connType string) (*conn.Conn, error) {
-	c := conn.NewConn(connection)
-	if _, err := c.Write([]byte(common.CONN_TEST)); err != nil {
-		return nil, err
-	}
-	if err := c.WriteLenContent([]byte(version.GetVersion())); err != nil {
-		return nil, err
-	}
-	if err := c.WriteLenContent([]byte(version.VERSION)); err != nil {
-		return nil, err
-	}
-	b, err := c.GetShortContent(32)
-	if err != nil {
-		logs.Error(err)
-		return nil, err
-	}
-	if crypt.Md5(version.GetVersion()) != string(b) {
-		logs.Error("The client does not match the server version. The current core version of the client is", version.GetVersion())
-		return nil, errors.New("server core version mismatch")
-	}
-	if _, err := c.Write([]byte(common.Getverifyval(vkey))); err != nil {
-		return nil, err
-	}
-	if s, err := c.ReadFlag(); err != nil {
-		return nil, err
-	} else if s == common.VERIFY_EER {
-		return nil, errors.New(fmt.Sprintf("Validation key %s incorrect", vkey))
-	}
-	if _, err := c.Write([]byte(connType)); err != nil {
-		return nil, err
-	}
-	return c, nil
 }
 
 //http proxy connection

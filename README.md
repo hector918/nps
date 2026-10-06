@@ -20,7 +20,7 @@ NPS is a lightweight, high-performance, powerful **intranet penetration** proxy 
 - Https integration, support to convert backend proxy and web services to https, and support multiple certificates.
 - Just simple configuration on web ui can complete most requirements.
 - Complete information display, such as traffic, system information, real-time bandwidth, client version, etc.
-- Powerful extension functions, everything is available (cache, compression, encryption, traffic limit, bandwidth limit, port reuse, etc.)
+- Powerful extension functions, everything is available (cache, compression, encryption, traffic limit, bandwidth limit, etc.)
 - Domain name resolution has functions such as custom headers, 404 page configuration, host modification, site protection, URL routing, and pan-resolution.
 - Multi-user and user registration support on server.
 

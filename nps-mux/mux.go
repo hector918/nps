@@ -51,6 +51,19 @@ type Mux struct {
 	statsAccepted      uint32        // client side: set once the server has said it takes stats
 }
 
+// underlying peels wrapping connections, a *tls.Conn above all, off c to get
+// at the socket the mux tunes and measures. The bytes are the wrapper's, but
+// the queueing happens in the kernel buffers of the socket beneath it.
+func underlying(c net.Conn) net.Conn {
+	for {
+		w, ok := c.(interface{ NetConn() net.Conn })
+		if !ok {
+			return c
+		}
+		c = w.NetConn()
+	}
+}
+
 func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 	return NewMuxStats(c, connType, pingCheckThreshold, nil, nil)
 }
