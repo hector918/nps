@@ -6,7 +6,7 @@ package version
 // rather than a const so the build can stamp it:
 //
 //	-X ehang.io/nps/lib/version.VERSION=0.26.10+g1a2b3c4
-var VERSION = "v0.27.11-hz1"
+var VERSION = "v0.27.12-hz1"
 
 // Fork names the repository this binary was built from. Upstream has been
 // unmaintained since 2021 and this tree carries fixes it never got, so every
