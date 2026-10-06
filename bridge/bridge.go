@@ -380,12 +380,16 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		go s.getConfig(c, isPub, client)
 	case common.WORK_REGISTER:
 		go s.register(c)
-	case common.WORK_SECRET:
-		if b, err := c.GetShortContent(32); err == nil {
-			s.SecretChan <- conn.NewSecret(string(b), c)
-		} else {
-			logs.Error("secret error, failed to match the key successfully")
+	case common.WORK_SECRET_MUX:
+		// say that this server understands the type: a visitor does not use
+		// the link until it has heard this, and an older server says nothing
+		if _, err := c.Write([]byte(common.WORK_SECRET_MUX)); err != nil {
+			c.Close()
+			return
 		}
+		go s.serveSecretStreams(nps_mux.NewMuxLiveness(c.Conn, s.tunnelType, common.SecretLinkPingCheck, common.SecretLinkPingEvery))
+	case common.WORK_SECRET:
+		s.dealSecret(c)
 	case common.WORK_FILE:
 		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
 		if v, ok := s.Client.LoadOrStore(id, NewClient(nil, muxConn, nil, vs)); ok {
@@ -421,6 +425,34 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 	}
 	c.SetAlive()
 	return
+}
+
+// serveSecretStreams takes the streams of a visitor's secret link. Each opens
+// with the digest of a secret, which is then dealt with as the secret of a
+// connection of its own is.
+func (s *Bridge) serveSecretStreams(m *nps_mux.Mux) {
+	for {
+		st, err := m.Accept()
+		if err != nil {
+			return
+		}
+		go s.dealSecret(conn.NewConn(st))
+	}
+}
+
+// dealSecret reads the digest of a secret, which is what a connection or a
+// stream for a secret tunnel opens with, and passes the connection on to the
+// task that has the secret. One that does not say it in good time is dropped.
+func (s *Bridge) dealSecret(c *conn.Conn) {
+	c.SetReadDeadlineBySecond(10)
+	b, err := c.GetShortContent(32)
+	if err != nil {
+		logs.Error("secret error, failed to match the key successfully")
+		c.Close()
+		return
+	}
+	c.SetAlive()
+	s.SecretChan <- conn.NewSecret(string(b), c)
 }
 
 //register ip

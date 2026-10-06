@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -29,7 +30,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labtool web|github|get|push ...")
+		fmt.Fprintln(os.Stderr, "usage: labtool web|github|get|fresh|push|alerts|mitm ...")
 		os.Exit(2)
 	}
 	a := os.Args[2:]
@@ -42,6 +43,8 @@ func main() {
 		os.Exit(get(a[0], a[1]))
 	case "push": // push <web addr> <user> <password> <client id> <tag>
 		push(a[0], a[1], a[2], a[3], a[4])
+	case "fresh": // fresh <url> <n>
+		fresh(a[0], a[1])
 	case "alerts": // alerts <web addr> <user> <password>
 		alerts(a[0], a[1], a[2])
 	case "mitm": // mitm <listen> <upstream>
@@ -92,6 +95,43 @@ func mitm(listen, upstream string) {
 			fmt.Printf("mitm: relayed a session, %d bytes to the server, %d to the client\n", toServer, toClient)
 		}()
 	}
+}
+
+// fresh makes n requests, each on a connection of its own, and prints the time
+// to the first byte of each reply and the median: the cost of a new
+// connection, which a kept one hides.
+func fresh(u, n string) {
+	count, err := strconv.Atoi(n)
+	if err != nil || count < 1 {
+		fmt.Println("  fresh: the count must be a positive number")
+		os.Exit(2)
+	}
+	var ds []time.Duration
+	for i := 0; i < count; i++ {
+		c := http.Client{
+			Timeout:   20 * time.Second,
+			Transport: &http.Transport{DisableKeepAlives: true},
+			// A redirect is a second request, on a second connection, and
+			// would count twice.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
+		t0 := time.Now()
+		resp, err := c.Get(u)
+		if err != nil {
+			fmt.Printf("  fresh: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.StatusCode != 200 {
+			fmt.Printf("  fresh: %s answered %s\n", u, resp.Status)
+			os.Exit(1)
+		}
+		ds = append(ds, time.Since(t0))
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		time.Sleep(150 * time.Millisecond)
+	}
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+	fmt.Printf("median %d ms (min %d, max %d, n=%d)\n", ds[len(ds)/2].Milliseconds(), ds[0].Milliseconds(), ds[len(ds)-1].Milliseconds(), len(ds))
 }
 
 func alerts(web, user, pass string) {

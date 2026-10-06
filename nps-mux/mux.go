@@ -34,13 +34,16 @@ type Mux struct {
 	conn               net.Conn
 	connMap            *connMap
 	newConnCh          chan *conn
+	done               chan struct{} // closed by Close; newConnCh is not, since a send on it may be waiting
 	id                 int32
 	closeChan          chan struct{}
 	IsClose            bool
 	counter            *latencyCounter
 	bw                 *bandwidth
 	pingCh             chan []byte
-	pingCheckTime      uint32 // we check the ping per 5s
+	pingCheckTime      uint32 // pings sent and not yet answered; one goes per pingInterval
+	pingInterval       time.Duration
+	pendingAccept      int32 // streams opened by the peer and not yet accepted; atomic
 	pingCheckThreshold uint32
 	connType           string
 	writeQueue         sendQueue
@@ -74,6 +77,33 @@ func NewMux(c net.Conn, connType string, pingCheckThreshold int) *Mux {
 // every ping the peer sends and tells the peer that it does. Both have to be
 // given here because the first ping goes out before NewMux returns.
 func NewMuxStats(c net.Conn, connType string, pingCheckThreshold int, src func() []byte, sink func([]byte)) *Mux {
+	return newMux(c, connType, pingCheckThreshold, src, sink, defaultPingInterval)
+}
+
+// defaultPingInterval is how often a mux pings its peer, and so, times the
+// threshold, how long a dead peer goes unnoticed.
+const defaultPingInterval = 5 * time.Second
+
+// maxPendingAccept bounds the streams a peer may have opened that the
+// application has not yet accepted. Their data is held for them, so without a
+// bound a peer could ask a mux whose Accept is stuck to hold any amount.
+const maxPendingAccept = 4096
+
+// NewMuxLiveness is NewMux with the interval of the pings given, for a mux
+// whose peer's death has to be noticed in seconds, not minutes: the threshold
+// times the interval is the time to give a silent peer up.
+func NewMuxLiveness(c net.Conn, connType string, pingCheckThreshold int, interval time.Duration) *Mux {
+	return newMux(c, connType, pingCheckThreshold, nil, nil, interval)
+}
+
+// Healthy reports whether the peer has answered a ping lately: at most one is
+// outstanding. A mux that is not is probably dead and not yet known to be, so
+// new work is better sent elsewhere, but it is not closed on this account.
+func (s *Mux) Healthy() bool {
+	return !s.IsClose && atomic.LoadUint32(&s.pingCheckTime) <= 1
+}
+
+func newMux(c net.Conn, connType string, pingCheckThreshold int, src func() []byte, sink func([]byte), interval time.Duration) *Mux {
 	//c.(*net.TCPConn).SetReadBuffer(0)
 	//c.(*net.TCPConn).SetWriteBuffer(0)
 	tuneTCP(c)
@@ -97,11 +127,13 @@ func NewMuxStats(c net.Conn, connType string, pingCheckThreshold int, src func()
 		id:                 0,
 		closeChan:          make(chan struct{}, 1),
 		newConnCh:          make(chan *conn),
+		done:               make(chan struct{}),
 		bw:                 NewBandwidth(raw),
 		IsClose:            false,
 		connType:           connType,
 		pingCh:             make(chan []byte),
 		pingCheckThreshold: checkThreshold,
+		pingInterval:       interval,
 		counter:            newLatencyCounter(),
 		statsSrc:           src,
 		statsSink:          sink,
@@ -117,19 +149,10 @@ func NewMuxStats(c net.Conn, connType string, pingCheckThreshold int, src func()
 }
 
 func (s *Mux) NewConn() (*conn, error) {
-	if s.IsClose {
-		return nil, errors.New("the mux has closed")
+	conn, err := s.open()
+	if err != nil {
+		return nil, err
 	}
-	conn := NewConn(s.getId(), s)
-	//it must be Set before send
-	s.connMap.Set(conn.connId, conn)
-	if s.IsClose {
-		// closed after the check above: connMap.Close may already have run
-		// and would never see this conn
-		_ = conn.Close()
-		return nil, errors.New("the mux has closed")
-	}
-	s.sendInfo(muxNewConn, conn.connId, nil)
 	//Set a timer timeout 120 second
 	timer := time.NewTimer(time.Minute * 2)
 	defer timer.Stop()
@@ -148,15 +171,46 @@ func (s *Mux) NewConn() (*conn, error) {
 	return nil, errors.New("create connection fail，the server refused the connection")
 }
 
+// NewConnNoWait opens a stream and returns at once, without waiting for the
+// peer to accept it, so data can follow the opening frame in the same flight
+// and a new stream costs no round trip. The peer's OK is not looked for, and
+// a peer that does not accept is found out by its closing the stream.
+//
+// It needs a peer that registers a stream when the opening frame arrives, as
+// this package now does, and not when the stream is accepted: an older peer
+// drops data that comes for a stream it has not yet accepted.
+func (s *Mux) NewConnNoWait() (*conn, error) {
+	return s.open()
+}
+
+// open registers a new stream and sends the frame that opens it.
+func (s *Mux) open() (*conn, error) {
+	if s.IsClose {
+		return nil, errors.New("the mux has closed")
+	}
+	conn := NewConn(s.getId(), s)
+	//it must be Set before send
+	s.connMap.Set(conn.connId, conn)
+	if s.IsClose {
+		// closed after the check above: connMap.Close may already have run
+		// and would never see this conn
+		_ = conn.Close()
+		return nil, errors.New("the mux has closed")
+	}
+	s.sendInfo(muxNewConn, conn.connId, nil)
+	return conn, nil
+}
+
 func (s *Mux) Accept() (net.Conn, error) {
 	if s.IsClose {
 		return nil, errors.New("accpet error,the mux has closed")
 	}
-	conn := <-s.newConnCh
-	if conn == nil {
-		return nil, errors.New("accpet error,the conn has closed")
+	select {
+	case conn := <-s.newConnCh:
+		return conn, nil
+	case <-s.done:
+		return nil, errors.New("accpet error,the mux has closed")
 	}
-	return conn, nil
 }
 
 func (s *Mux) Addr() net.Addr {
@@ -244,7 +298,7 @@ func (s *Mux) ping() {
 	go func() {
 		s.sendPing()
 		// send the ping flag and Get the latency first
-		ticker := time.NewTicker(time.Second * 5)
+		ticker := time.NewTicker(s.pingInterval)
 		defer ticker.Stop()
 		for {
 			if s.IsClose {
@@ -305,8 +359,12 @@ func (s *Mux) readSession() {
 			if s.IsClose {
 				break // make sure that is closed
 			}
-			s.connMap.Set(connection.connId, connection) //it has been Set before send ok
-			s.newConnCh <- connection
+			atomic.AddInt32(&s.pendingAccept, -1)
+			select {
+			case s.newConnCh <- connection:
+			case <-s.done:
+				return
+			}
 			s.sendInfo(muxNewConnOk, connection.connId, nil)
 		}
 	}()
@@ -335,7 +393,17 @@ func (s *Mux) readSession() {
 			//}
 			switch pack.flag {
 			case muxNewConn: //New connection
+				if atomic.AddInt32(&s.pendingAccept, 1) > maxPendingAccept {
+					// not taking more than this on trust: refuse the stream
+					atomic.AddInt32(&s.pendingAccept, -1)
+					s.sendInfo(muxConnClose, pack.id, nil)
+					continue
+				}
 				connection := NewConn(pack.id, s)
+				// Registered now, not when it is accepted: a peer that does
+				// not wait for the OK sends data right behind this frame,
+				// and a frame for a stream that is not in the map is dropped.
+				s.connMap.Set(connection.connId, connection)
 				s.newConnQueue.Push(connection)
 				continue
 			case muxPingFlag: //ping
@@ -422,7 +490,7 @@ func (s *Mux) Close() (err error) {
 		s.connMap.Close()
 		//s.connMap = nil
 		s.closeChan <- struct{}{}
-		close(s.newConnCh)
+		close(s.done)
 		// while target host close socket without finish steps, conn.Close method maybe blocked
 		// and tcp status change to CLOSE WAIT or TIME WAIT, so we close it in other goroutine
 		_ = s.conn.SetDeadline(time.Now().Add(time.Second * 5))
