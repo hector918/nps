@@ -16,7 +16,6 @@ type CommonConfig struct {
 	Tp               string //bridgeType kcp or tcp
 	AutoReconnection bool
 	ProxyUrl         string
-	Fingerprint      string // the pin of the server, see lib/bridgetls
 	Client           *file.Client
 	DisconnectTime   int
 }
@@ -139,8 +138,6 @@ func dealCommon(s string) *CommonConfig {
 			c.Client.Cnf.Crypt = common.GetBoolByStr(item[1])
 		case "proxy_url":
 			c.ProxyUrl = item[1]
-		case "server_fingerprint":
-			c.Fingerprint = item[1]
 		case "rate_limit":
 			c.Client.RateLimit = common.GetIntNoErrByStr(item[1])
 		case "flow_limit":

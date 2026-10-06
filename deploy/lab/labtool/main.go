@@ -1,7 +1,7 @@
 // labtool is the small helper the two-container lab runs inside its
 // containers: a static web server for the target, a stand-in for GitHub's
 // release downloads, a timed GET, the web login-and-push the nps panel does,
-// and a certificate fingerprint printer.
+// the alerts the server has raised, and a man in the middle that relays.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -22,6 +23,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"ehang.io/nps/lib/bridgetls"
 )
 
 func main() {
@@ -39,9 +42,72 @@ func main() {
 		os.Exit(get(a[0], a[1]))
 	case "push": // push <web addr> <user> <password> <client id> <tag>
 		push(a[0], a[1], a[2], a[3], a[4])
+	case "alerts": // alerts <web addr> <user> <password>
+		alerts(a[0], a[1], a[2])
+	case "mitm": // mitm <listen> <upstream>
+		mitm(a[0], a[1])
 	default:
 		os.Exit(2)
 	}
+}
+
+// mitm is the attack a pinned or static secret cannot stop: it terminates the
+// client's TLS with a certificate of its own, opens its own TLS to the real
+// server, and carries every application byte across unchanged.
+func mitm(listen, upstream string) {
+	cfg, err := bridgetls.ServerConfig()
+	if err != nil {
+		panic(err)
+	}
+	l, err := net.Listen("tcp", listen)
+	if err != nil {
+		panic(err)
+	}
+	for {
+		raw, err := l.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			down, err := bridgetls.Server(raw, cfg)
+			if err != nil {
+				return
+			}
+			u, err := net.Dial("tcp", upstream)
+			if err != nil {
+				down.Close()
+				return
+			}
+			up, err := bridgetls.Client(u, bridgetls.ClientConfig())
+			if err != nil {
+				down.Close()
+				return
+			}
+			var toServer, toClient int64
+			done := make(chan struct{})
+			go func() { toServer, _ = io.Copy(up, down); up.Close(); close(done) }()
+			toClient, _ = io.Copy(down, up)
+			down.Close()
+			<-done
+			fmt.Printf("mitm: relayed a session, %d bytes to the server, %d to the client\n", toServer, toClient)
+		}()
+	}
+}
+
+func alerts(web, user, pass string) {
+	jar, _ := cookiejar.New(nil)
+	c := http.Client{Jar: jar, Timeout: 15 * time.Second}
+	if _, err := c.PostForm(web+"/login/verify", url.Values{"username": {user}, "password": {pass}}); err != nil {
+		fmt.Println("login:", err)
+		os.Exit(1)
+	}
+	r, err := c.Get(web + "/stats/alerts")
+	if err != nil {
+		fmt.Println("alerts:", err)
+		os.Exit(1)
+	}
+	b, _ := io.ReadAll(r.Body)
+	fmt.Println(string(b))
 }
 
 // github answers every path with the file of that name in dir, over TLS with

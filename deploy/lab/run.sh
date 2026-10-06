@@ -69,16 +69,14 @@ srv_start() {
     docker exec -d lab-srv sh -c 'cd /run/s && exec ./nps >/run/s/nps.log 2>&1'
     sleep 3
 }
-# cli_start <old|new> [fingerprint]
+# cli_start <old|new>; SRV overrides the address the clients dial
 cli_start() {
     cli_stop
-    local fp=${2:-}
-    local line=""; [[ -n $fp ]] && line="server_fingerprint=$fp"
+    local srv=${SRV:-lab-srv:8024}
     C "mkdir -p /run/c/target /run/c/visitor && cp /lab/$1/npc /run/c/target/npc && cp /lab/$1/npc /run/c/visitor/npc
 cat >/run/c/target.conf <<CONF
 [common]
-server_addr=lab-srv:8024
-$line
+server_addr=$srv
 vkey=tk
 conn_type=tcp
 auto_reconnection=true
@@ -90,8 +88,7 @@ target_addr=127.0.0.1:8090
 CONF
 cat >/run/c/visitor.conf <<CONF
 [common]
-server_addr=lab-srv:8024
-$line
+server_addr=$srv
 vkey=vk
 conn_type=tcp
 auto_reconnection=true
@@ -119,22 +116,16 @@ verdict() { # verdict <name> <expected: pass|fail> <rc of works>
     RESULT+=("$(printf '%-52s expect %-4s got %-4s %s' "$1" "$2" "$got" "$mark")")
 }
 
-ZERO=sha256:$(printf '0%.0s' $(seq 1 64))
-
 echo; echo "=== 1. old server + old clients (baseline)"
 KEEP= srv_start old; cli_start old
 works 3; verdict "old server + old clients" pass $?
 
-echo; echo "=== 2. new server + new clients, pinned"
-KEEP= srv_start new
-FP=$(S 'cd /run/s && ./nps fingerprint')
-echo "    nps fingerprint says:  $FP"
-echo "    server log says:       $(S "grep -a -o 'sha256:[0-9a-f]*' /run/s/nps.log | head -1")"
-cli_start new "$FP"
-works 3; verdict "new server + new clients (pinned)" pass $?
+echo; echo "=== 2. new server + new clients, nothing to configure but the vkey"
+KEEP= srv_start new; cli_start new
+works 3; verdict "new server + new clients" pass $?
 
 echo; echo "=== 3. OLD server + NEW clients (clients updated first, server not yet)"
-KEEP= srv_start old; cli_start new "$ZERO"; sleep 8
+KEEP= srv_start old; cli_start new; sleep 8
 works 2; verdict "old server + new clients" fail $?
 echo "  what the new client says:"; tail_log lab-cli /run/c/target.log 'error\|fail\|refus\|presented\|eof\|reset\|tls' 3
 echo "  what the old server says:"; tail_log lab-srv /run/s/nps.log 'client\|error\|version' 3
@@ -165,16 +156,13 @@ sleep 8
 works 3; verdict "pushed incompatible update rolled back, tunnel works" pass $?
 C 'kill $(pgrep -f "labtool github")' >/dev/null 2>&1
 
-echo; echo "=== 6. cutover in the order: key first, clients, then the server"
+echo; echo "=== 6. cutover in the order: clients first, then the server"
 KEEP= srv_start old; cli_start old
 echo "  working before the cutover:"; works 2
-echo "  step 1: make the new server's key and read its fingerprint, with the old server still serving"
-S 'cp /lab/new/nps /run/s/nps.new && cd /run/s && ./nps.new fingerprint' >/tmp/lab-fp.txt; FP=$(tail -1 /tmp/lab-fp.txt)
-echo "    $FP"
-echo "  step 2: restart every client on the new binary with the fingerprint (they go dark)"
-cli_start new "$FP"
+echo "  step 1: restart every client on the new binary (they go dark)"
+cli_start new
 echo "    through the tunnel now (server still old):"; works 1 && echo "    (unexpectedly worked)"
-echo "  step 3: switch the server, key kept"
+echo "  step 2: switch the server"
 T0=$(date +%s)
 KEEP=1 srv_start new
 for i in $(seq 1 40); do
@@ -183,7 +171,27 @@ for i in $(seq 1 40); do
     fi
     sleep 1
 done
-works 3; verdict "cutover: key, clients, then server" pass $?
+works 3; verdict "cutover: clients, then server" pass $?
+
+echo; echo "=== 7. a man in the middle that relays every byte between a client and the real server"
+KEEP= srv_start new
+docker exec -d lab-cli /lab/labtool mitm 127.0.0.1:9024 lab-srv:8024; sleep 1
+SRV=127.0.0.1:9024 cli_start new; sleep 6
+works 2; verdict "relaying man in the middle is refused" fail $?
+echo "  what the client says:"; tail_log lab-cli /run/c/target.log 'did not accept\|alert\|relaying' 2
+echo "  what the server says:"; tail_log lab-srv /run/s/nps.log 'ALERT' 2
+A=$(S "/lab/labtool alerts http://127.0.0.1:8080 admin 123")
+if echo "$A" | grep -q '"unknown-key"'; then echo "    the alert is on the server's /stats/alerts"; RESULT+=("$(printf '%-52s expect %-4s got %-4s %s' 'alert raised for the relayed session' yes yes OK)"); else echo "$A" | head -5; RESULT+=("$(printf '%-52s expect %-4s got %-4s %s' 'alert raised for the relayed session' yes no UNEXPECTED)"); fi
+C 'kill $(pgrep -f "labtool mitm")' >/dev/null 2>&1
+
+echo; echo "=== 8. the same vkey from a second address"
+KEEP= srv_start new; cli_start new
+docker exec -d lab-srv sh -c 'cd /run/s && exec /lab/new/npc -server=127.0.0.1:8024 -vkey=tk -debug=true >/run/s/intruder.log 2>&1'
+sleep 6
+A=$(S "/lab/labtool alerts http://127.0.0.1:8080 admin 123")
+echo "  what the server says:"; tail_log lab-srv /run/s/nps.log 'ALERT' 2
+if echo "$A" | grep -q '"duplicate"'; then RESULT+=("$(printf '%-52s expect %-4s got %-4s %s' 'duplicate vkey raised an alert' yes yes OK)"); else RESULT+=("$(printf '%-52s expect %-4s got %-4s %s' 'duplicate vkey raised an alert' yes no UNEXPECTED)"); fi
+S 'for p in $(pidof npc); do kill $p; done' >/dev/null 2>&1
 
 echo; echo "================ summary"
 printf '%s\n' "${RESULT[@]}"

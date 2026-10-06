@@ -25,7 +25,6 @@ type TRPClient struct {
 	svrAddr        string
 	bridgeConnType string
 	proxyUrl       string
-	fingerprint    string
 	vKey           string
 	p2pAddr        map[string]string
 	tunnel         *nps_mux.Mux
@@ -38,14 +37,13 @@ type TRPClient struct {
 }
 
 //new client
-func NewRPClient(svraddr string, vKey string, bridgeConnType string, proxyUrl string, fingerprint string, cnf *config.Config, disconnectTime int) *TRPClient {
+func NewRPClient(svraddr string, vKey string, bridgeConnType string, proxyUrl string, cnf *config.Config, disconnectTime int) *TRPClient {
 	return &TRPClient{
 		svrAddr:        svraddr,
 		p2pAddr:        make(map[string]string, 0),
 		vKey:           vKey,
 		bridgeConnType: bridgeConnType,
 		proxyUrl:       proxyUrl,
-		fingerprint:    fingerprint,
 		cnf:            cnf,
 		disconnectTime: disconnectTime,
 		once:           sync.Once{},
@@ -64,7 +62,7 @@ retry:
 		return
 	}
 	NowStatus = 0
-	c, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_MAIN, s.proxyUrl, s.fingerprint)
+	c, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_MAIN, s.proxyUrl)
 	if err != nil {
 		logs.Error("The connection server failed and will be reconnected in five seconds, error", err.Error())
 		time.Sleep(time.Second * 5)
@@ -182,7 +180,7 @@ func (s *TRPClient) newUdpConn(localAddr, rAddr string, md5Password string) {
 
 //pmux tunnel
 func (s *TRPClient) newChan() {
-	tunnel, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_CHAN, s.proxyUrl, s.fingerprint)
+	tunnel, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_CHAN, s.proxyUrl)
 	if err != nil {
 		logs.Error("connect to ", s.svrAddr, "error:", err)
 		return

@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -35,7 +36,7 @@ func GetTaskStatus(path string) {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	c, err := NewConn(cnf.CommonConfig.Tp, cnf.CommonConfig.VKey, cnf.CommonConfig.Server, common.WORK_CONFIG, cnf.CommonConfig.ProxyUrl, cnf.CommonConfig.Fingerprint)
+	c, err := NewConn(cnf.CommonConfig.Tp, cnf.CommonConfig.VKey, cnf.CommonConfig.Server, common.WORK_CONFIG, cnf.CommonConfig.ProxyUrl)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -107,7 +108,7 @@ re:
 		return
 	}
 	first = false
-	c, err := NewConn(cnf.CommonConfig.Tp, cnf.CommonConfig.VKey, cnf.CommonConfig.Server, common.WORK_CONFIG, cnf.CommonConfig.ProxyUrl, cnf.CommonConfig.Fingerprint)
+	c, err := NewConn(cnf.CommonConfig.Tp, cnf.CommonConfig.VKey, cnf.CommonConfig.Server, common.WORK_CONFIG, cnf.CommonConfig.ProxyUrl)
 	if err != nil {
 		logs.Error(err)
 		goto re
@@ -183,7 +184,7 @@ re:
 	} else {
 		logs.Notice("web access login username:%s password:%s", cnf.CommonConfig.Client.WebUserName, cnf.CommonConfig.Client.WebPassword)
 	}
-	NewRPClient(cnf.CommonConfig.Server, vkey, cnf.CommonConfig.Tp, cnf.CommonConfig.ProxyUrl, cnf.CommonConfig.Fingerprint, cnf, cnf.CommonConfig.DisconnectTime).Start()
+	NewRPClient(cnf.CommonConfig.Server, vkey, cnf.CommonConfig.Tp, cnf.CommonConfig.ProxyUrl, cnf, cnf.CommonConfig.DisconnectTime).Start()
 	CloseLocalServer()
 	goto re
 }
@@ -199,128 +200,67 @@ func logAddFail(err error, refused interface{}, detail ...interface{}) {
 }
 
 // Create a new connection with the server and verify it
-func NewConn(tp string, vkey string, server string, connType string, proxyUrl string, fingerprint string) (*conn.Conn, error) {
-	v, err := openConn(tp, vkey, server, connType, proxyUrl, fingerprint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if err := v.verify(); err != nil {
-		v.Close()
-		return nil, err
-	}
-	c := conn.NewConn(v.Conn)
-	c.SetAlive()
-	return c, nil
-}
-
-// NewConnPipelined is NewConn for a connection whose first bytes are known
-// up front, such as the key of a secret tunnel. They go out in the same flight
-// as the hello, and the server's verdict on the hello is checked when the
-// first of its answer is read, which saves a round trip on every new
-// connection.
-//
-// Because the verdict is not read here, a wrong vkey or protocol surfaces as
-// an error from the first Read on the returned connection instead of from
-// this call.
-func NewConnPipelined(tp string, vkey string, server string, connType string, proxyUrl string, fingerprint string, first []byte) (*conn.Conn, error) {
-	v, err := openConn(tp, vkey, server, connType, proxyUrl, fingerprint, first)
-	if err != nil {
-		return nil, err
-	}
-	return conn.NewConn(v), nil
-}
-
-// openConn dials the server, secures the connection and sends the hello, and
-// everything in first behind it. The server's verdict is left unread.
-func openConn(tp string, vkey string, server string, connType string, proxyUrl string, fingerprint string, first []byte) (*verifyOnReadConn, error) {
-	tlsConfig, err := bridgetls.ClientConfig(fingerprint)
-	if err != nil {
-		return nil, err
-	}
+func NewConn(tp string, vkey string, server string, connType string, proxyUrl string) (*conn.Conn, error) {
 	raw, err := dialServer(tp, server, proxyUrl)
 	if err != nil {
 		return nil, err
 	}
-	secured, err := bridgetls.Client(raw, tlsConfig)
+	secured, err := bridgetls.Client(raw, bridgetls.ClientConfig())
 	if err != nil {
 		// A link that connects but then fails the handshake is the normal
 		// case on a flapping network; bridgetls has closed the socket.
 		return nil, err
 	}
-	hello, err := helloBytes(vkey, connType, first)
+	c, err := authenticate(secured, vkey, connType)
 	if err != nil {
 		secured.Close()
 		return nil, err
 	}
-	secured.SetWriteDeadline(time.Now().Add(time.Second * 10))
-	_, err = secured.Write(hello)
-	secured.SetWriteDeadline(time.Time{})
+	return c, nil
+}
+
+// authenticate runs the proofs over a fresh TLS connection. TLS here only
+// encrypts, the server's certificate is not checked, so until the server has
+// proved that it holds the vkey nothing but the hello and the client's proof
+// is sent to it. The proof is not the vkey, but it is enough for whoever
+// answers to guess a weak vkey offline, see bridgetls.
+func authenticate(secured *tls.Conn, vkey string, connType string) (*conn.Conn, error) {
+	exporter, err := bridgetls.Exporter(secured)
 	if err != nil {
-		secured.Close()
 		return nil, err
 	}
-	return &verifyOnReadConn{Conn: secured, vkey: vkey}, nil
-}
-
-// helloBytes lays out what a client says first, in the order the server reads
-// it: protocol revision, client version, vkey digest, what the connection is
-// for, then first.
-func helloBytes(vkey string, connType string, first []byte) ([]byte, error) {
-	var out []byte
-	for _, v := range []string{version.Protocol, version.VERSION} {
-		b, err := conn.GetLenBytes([]byte(v))
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, b...)
+	hello := bridgetls.Hello(version.Protocol, version.VERSION, connType)
+	proof := bridgetls.ClientProof(vkey, exporter, hello)
+	secured.SetDeadline(time.Now().Add(time.Second * 10))
+	defer secured.SetDeadline(time.Time{})
+	if _, err := secured.Write(append(hello, proof...)); err != nil {
+		return nil, err
 	}
-	out = append(out, common.Getverifyval(vkey)...)
-	out = append(out, connType...)
-	return append(out, first...), nil
-}
-
-// verifyOnReadConn holds a connection whose hello has been sent, and reads
-// the server's verdict on it ahead of the first byte of tunnel data.
-type verifyOnReadConn struct {
-	net.Conn
-	vkey     string
-	verified bool
-	err      error
-}
-
-func (v *verifyOnReadConn) Read(b []byte) (int, error) {
-	if err := v.verify(); err != nil {
-		return 0, err
+	c := conn.NewConn(secured)
+	flag, err := c.ReadFlag()
+	if err != nil {
+		return nil, err
 	}
-	return v.Conn.Read(b)
-}
-
-// NetConn lets the mux find the socket under this wrapper.
-func (v *verifyOnReadConn) NetConn() net.Conn { return v.Conn }
-
-func (v *verifyOnReadConn) verify() error {
-	if v.verified {
-		return v.err
-	}
-	v.verified = true
-	v.Conn.SetReadDeadline(time.Now().Add(time.Second * 10))
-	defer v.Conn.SetReadDeadline(time.Time{})
-	flag, err := conn.NewConn(v.Conn).ReadFlag()
-	switch {
-	case err != nil:
-		v.err = err
-	case flag == common.VERIFY_SUCCESS:
-	case flag == common.VERIFY_EER:
-		v.err = fmt.Errorf("Validation key %s incorrect", v.vkey)
-	case flag == common.VERIFY_PROTOCOL:
-		v.err = errors.New("the server speaks another protocol revision than this client (" + version.Protocol + "): update both to the same release")
+	switch flag {
+	case common.VERIFY_SUCCESS:
+	case common.VERIFY_EER:
+		// The vkey stays out of the message: it is the one secret, and logs get shared.
+		return nil, errors.New("the server did not accept the vkey: it is wrong, or the client is disabled, or something between here and the server is relaying the connection")
+	case common.VERIFY_PROTOCOL:
+		return nil, errors.New("the server speaks another protocol revision than this client (" + version.Protocol + "): update both to the same release")
 	default:
-		v.err = fmt.Errorf("unexpected reply %q from the server", flag)
+		return nil, fmt.Errorf("unexpected reply %q from the server", flag)
 	}
-	if v.err != nil {
-		logs.Error(v.err)
+	got, err := c.GetShortContent(bridgetls.ProofLen)
+	if err != nil {
+		return nil, err
 	}
-	return v.err
+	if !bridgetls.Equal(got, bridgetls.ServerProof(vkey, exporter, proof)) {
+		err := errors.New("ALERT: the server did not prove that it holds the vkey: whatever answered is not the server, and may be a man in the middle")
+		logs.Error(err)
+		return nil, err
+	}
+	return c, nil
 }
 
 // dialServer opens the transport to the server, through the proxy if one is

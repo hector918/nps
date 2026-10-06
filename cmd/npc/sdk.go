@@ -2,7 +2,6 @@ package main
 
 import (
 	"C"
-	"os"
 	"ehang.io/nps/client"
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/version"
@@ -12,14 +11,12 @@ import (
 var cl *client.TRPClient
 
 //export StartClientByVerifyKey
-// The fingerprint of the server is taken from NPC_SERVER_FP, so that the
-// signature callers were built against stays the one they get.
 func StartClientByVerifyKey(serverAddr, verifyKey, connType, proxyUrl *C.char) int {
 	_ = logs.SetLogger("store")
 	if cl != nil {
 		cl.Close()
 	}
-	cl = client.NewRPClient(C.GoString(serverAddr), C.GoString(verifyKey), C.GoString(connType), C.GoString(proxyUrl), os.Getenv("NPC_SERVER_FP"), nil, 60)
+	cl = client.NewRPClient(C.GoString(serverAddr), C.GoString(verifyKey), C.GoString(connType), C.GoString(proxyUrl), nil, 60)
 	cl.Start()
 	return 1
 }

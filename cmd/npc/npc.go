@@ -27,7 +27,6 @@ var (
 	verifyKey      = flag.String("vkey", "", "Authentication key")
 	logType        = flag.String("log", "stdout", "Log output mode（stdout|file）")
 	connType       = flag.String("type", "tcp", "Connection type with the server（kcp|tcp）")
-	serverFp       = flag.String("server_fp", "", "Fingerprint of the server (sha256:...), printed by nps at start")
 	proxyUrl       = flag.String("proxy", "", "proxy socks5 url(eg:socks5://111:222@127.0.0.1:9007)")
 	logLevel       = flag.String("log_level", "7", "log level 0~7")
 	registerTime   = flag.Int("time", 2, "register time long /h")
@@ -111,8 +110,7 @@ func main() {
 			}
 		case "register":
 			flag.CommandLine.Parse(os.Args[2:])
-			fingerprintFromEnv()
-			client.RegisterLocalIp(*serverAddr, *verifyKey, *connType, *proxyUrl, *serverFp, *registerTime)
+			client.RegisterLocalIp(*serverAddr, *verifyKey, *connType, *proxyUrl, *registerTime)
 		case "update":
 			// Deliberately not install.UpdateNpc: that one downloads from
 			// upstream ehang-io, so running it on a patched node would
@@ -213,24 +211,14 @@ func (p *npc) run() error {
 	return nil
 }
 
-// fingerprintFromEnv lets NPC_SERVER_FP stand in for -server_fp, for every way
-// of running npc that takes the flag.
-func fingerprintFromEnv() {
-	if *serverFp == "" {
-		*serverFp = os.Getenv("NPC_SERVER_FP")
-	}
-}
-
 func run() {
 	common.InitPProfFromArg(*pprofAddr)
-	fingerprintFromEnv()
 	//p2p or secret command
 	if *password != "" {
 		commonConfig := new(config.CommonConfig)
 		commonConfig.Server = *serverAddr
 		commonConfig.VKey = *verifyKey
 		commonConfig.Tp = *connType
-		commonConfig.Fingerprint = *serverFp
 		localServer := new(config.LocalServer)
 		localServer.Type = *localType
 		localServer.Password = *password
@@ -256,7 +244,7 @@ func run() {
 	if *verifyKey != "" && *serverAddr != "" && *configPath == "" {
 		go func() {
 			for {
-				client.NewRPClient(*serverAddr, *verifyKey, *connType, *proxyUrl, *serverFp, nil, *disconnectTime).Start()
+				client.NewRPClient(*serverAddr, *verifyKey, *connType, *proxyUrl, nil, *disconnectTime).Start()
 				logs.Info("Client closed! It will be reconnected in five seconds")
 				time.Sleep(time.Second * 5)
 			}

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"ehang.io/nps/bridge"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/sysstat"
 	"ehang.io/nps/server"
@@ -76,6 +77,17 @@ func (s *StatsController) Latest() {
 		return true
 	})
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Id < rows[j].Id })
+	s.Data["json"] = map[string]interface{}{"rows": rows, "total": len(rows)}
+	s.ServeJSON()
+	s.StopRun()
+}
+
+// Alerts answers with what the bridge has flagged, newest first: connections
+// that proved no key the server holds, and keys that appear from two places.
+// Repeats within a minute are folded into one entry with a count.
+func (s *StatsController) Alerts() {
+	s.adminOnly()
+	rows := bridge.Alerts()
 	s.Data["json"] = map[string]interface{}{"rows": rows, "total": len(rows)}
 	s.ServeJSON()
 	s.StopRun()

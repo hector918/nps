@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,14 +81,11 @@ func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList sync.Ma
 }
 
 func (s *Bridge) StartTunnel() error {
-	// Every connection to the bridge is TLS, so there is nothing to serve
-	// without the key.
-	tlsConfig, fingerprint, err := bridgetls.LoadOrCreate(filepath.Join(common.GetRunPath(), "conf"))
+	tlsConfig, err := bridgetls.ServerConfig()
 	if err != nil {
-		return fmt.Errorf("bridge TLS key: %w", err)
+		return fmt.Errorf("bridge TLS: %w", err)
 	}
 	s.tlsConfig = tlsConfig
-	logs.Notice("bridge fingerprint, set it as server_fingerprint on every client: %s", fingerprint)
 	go s.ping()
 	if s.tunnelType == "kcp" {
 		logs.Info("server start, the bridge type is %s, the bridge port is %d", s.tunnelType, s.TunnelPort)
@@ -187,21 +183,16 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	s.DelClient(id)
 }
 
-//验证失败，返回错误验证flag，并且关闭连接
-func (s *Bridge) verifyError(c *conn.Conn) {
-	c.Write([]byte(common.VERIFY_EER))
-}
-
-func (s *Bridge) verifySuccess(c *conn.Conn) {
-	c.Write([]byte(common.VERIFY_SUCCESS))
-}
-
-// cliProcess reads the hello of a connection that is already TLS and pinned:
-// the protocol revision, the client's version, the digest of its vkey and what
-// the connection is for, all in one flight, and answers with a single verdict.
-// Nothing is echoed back before the verdict, so a client may send the first
-// bytes of the work itself right behind its hello.
+// cliProcess reads the hello of a connection that is already TLS: the protocol
+// revision, the client's version, what the connection is for, and a proof that
+// the client holds the vkey of one of the clients here. The proof is an HMAC
+// bound to this TLS session, see bridgetls, so it names no key and cannot be
+// carried to another session. The answer is a verdict and, on success, the
+// server's own proof, which is how the client learns that it is talking to the
+// server and not to something in between. Nothing the client does next is
+// sent before it has checked it.
 func (s *Bridge) cliProcess(c *conn.Conn) {
+	ip := common.GetIpByAddr(c.Conn.RemoteAddr().String())
 	c.SetReadDeadlineBySecond(10)
 	protocol, err := c.GetShortLenContent()
 	if err != nil {
@@ -224,25 +215,35 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 		c.Close()
 		return
 	}
-	buf, err := c.GetShortContent(32)
-	if err != nil {
-		c.Close()
-		return
-	}
 	flag, err := c.ReadFlag()
 	if err != nil {
 		logs.Warn(err, flag)
 		c.Close()
 		return
 	}
-	id, err := file.GetDb().GetIdByVerifyKey(string(buf), c.Conn.RemoteAddr().String())
+	proof, err := c.GetShortContent(bridgetls.ProofLen)
 	if err != nil {
-		logs.Info("Current client connection validation error, close this client:", c.Conn.RemoteAddr())
-		s.verifyError(c)
 		c.Close()
 		return
 	}
-	s.verifySuccess(c)
+	exporter, err := bridgetls.Exporter(c.Conn)
+	if err != nil {
+		logs.Warn(err)
+		c.Close()
+		return
+	}
+	hello := bridgetls.Hello(string(protocol), string(vs), flag)
+	id, vkey, err := file.GetDb().FindClientByProof(func(k string) bool {
+		return bridgetls.Equal(bridgetls.ClientProof(k, exporter, hello), proof)
+	}, c.Conn.RemoteAddr().String())
+	if err != nil {
+		raise("unknown-key", ip, 0, "a connection proved no vkey that any enabled client here holds: a wrong or disabled key, a scanner, or someone relaying a client's session")
+		c.Write([]byte(common.VERIFY_EER))
+		c.Close()
+		return
+	}
+	c.Write(append([]byte(common.VERIFY_SUCCESS), bridgetls.ServerProof(vkey, exporter, proof)...))
+	warnWeakVkey(id, vkey, ip)
 	c.SetAlive()
 	s.typeDeal(flag, c, id, string(vs))
 }
@@ -348,8 +349,13 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		}
 		//the vKey connect by another ,close the client of before
 		if v, ok := s.Client.LoadOrStore(id, NewClient(nil, nil, c, vs)); ok {
-			if v.(*Client).signal != nil {
-				v.(*Client).signal.WriteClose()
+			if old := v.(*Client).signal; old != nil {
+				// the same vkey from another address while the first is still
+				// here is a client started twice, or a key that has got out
+				if oldIP, newIP := common.GetIpByAddr(old.Conn.RemoteAddr().String()), common.GetIpByAddr(c.Conn.RemoteAddr().String()); oldIP != newIP {
+					raise("duplicate", newIP, id, fmt.Sprintf("client %d connected from %s while still connected from %s; the first is dropped. A client that changed network and has not been noticed gone looks the same, as does a client started twice or a vkey that got out", id, newIP, oldIP))
+				}
+				old.WriteClose()
 			}
 			v.(*Client).signal = c
 			v.(*Client).Version = vs
