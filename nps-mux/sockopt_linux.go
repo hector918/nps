@@ -33,7 +33,7 @@ var congestionWarnOnce sync.Once
 // that the host refuses are logged and skipped: the tunnel still works
 // without them, only with more queueing.
 func tuneTCP(c net.Conn) {
-	tc, ok := c.(*net.TCPConn)
+	tc, ok := underlying(c).(*net.TCPConn)
 	if !ok {
 		return
 	}

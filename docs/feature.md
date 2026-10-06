@@ -130,11 +130,27 @@ time为有效小时数，例如time=2，在当前时间后的两小时内，本�
 
 ## 客户端最大隧道数限制
 nps支持对客户端的隧道数量进行限制，该功能默认是关闭的，如需开启，请在`nps.conf`中设置`allow_tunnel_num_limit=true`。
-## 端口复用
-在一些严格的网络环境中，对端口的个数等限制较大，nps支持强大端口复用功能。将`bridge_port`、 `http_proxy_port`、 `https_proxy_port` 、`web_port`都设置为同一端口，也能正常使用。
+## 桥接加密与服务端指纹
+客户端到服务端的每一条连接，无论用途（主隧道、配置、私密代理、文件、p2p 协商……），从第一个字节起都是 TLS 1.3，握手内容（协议版本、vkey 摘要、连接用途）都在加密通道里面。旧的明文协议已经移除，客户端和服务端必须一起升级。
 
-- 使用时将需要复用的端口设置为与`bridge_port`一致即可，将自动识别。
-- 如需将web管理的端口也复用，需要配置`web_host`也就是一个二级域名以便区分
+服务端第一次启动时在`conf/bridge.key`、`conf/bridge.crt`生成自己的密钥和自签名证书，并在启动日志里打印指纹：
+
+```
+bridge fingerprint, set it as server_fingerprint on every client: sha256:5b0e80e2...
+```
+
+没有证书颁发机构可以信任，指纹就是服务端的全部身份，客户端必须固定它，否则不会连接任何服务端：
+
+- 配置文件：`[common]`里写`server_fingerprint=sha256:...`
+- 命令行：`npc -server=... -vkey=... -server_fp=sha256:...`
+- 环境变量：`NPC_SERVER_FP`
+
+没有设置或指纹不符时，客户端会拒绝连接，错误信息里带有服务端实际出示的指纹，核对无误后复制过去即可。指纹是公钥的 SHA-256，所以只要保留`conf/bridge.key`，重启或更换证书都不会改变它；删除这两个文件会生成新的指纹，所有客户端都要重新设置。
+
+因为整条连接已经加密，`crypt`开关不再起作用（保留是为了让旧的配置文件和 web 界面继续可用）；`compress`照旧。
+
+## 端口复用
+bridge 连接从第一个字节起就是 TLS，与 https 代理无法区分，所以`bridge_port`必须独占一个端口，不能与`http_proxy_port`、`https_proxy_port`、`web_port`相同，否则服务端会拒绝启动。
 
 ## 多路复用
 

@@ -63,7 +63,7 @@ func CloseLocalServer() {
 }
 
 func startLocalFileServer(config *config.CommonConfig, t *file.Tunnel, vkey string) {
-	remoteConn, err := NewConn(config.Tp, vkey, config.Server, common.WORK_FILE, config.ProxyUrl)
+	remoteConn, err := NewConn(config.Tp, vkey, config.Server, common.WORK_FILE, config.ProxyUrl, config.Fingerprint)
 	if err != nil {
 		logs.Error("Local connection server failed ", err.Error())
 		return
@@ -153,7 +153,7 @@ func handleUdpMonitor(config *config.CommonConfig, l *config.LocalServer) {
 
 func handleSecret(localTcpConn net.Conn, config *config.CommonConfig, l *config.LocalServer) {
 	// The key goes out with the handshake, not after it: see NewConnPipelined.
-	remoteConn, err := NewConnPipelined(config.Tp, config.VKey, config.Server, common.WORK_SECRET, config.ProxyUrl, []byte(crypt.Md5(l.Password)))
+	remoteConn, err := NewConnPipelined(config.Tp, config.VKey, config.Server, common.WORK_SECRET, config.ProxyUrl, config.Fingerprint, []byte(crypt.Md5(l.Password)))
 	if err != nil {
 		logs.Error("Local connection server failed ", err.Error())
 		localTcpConn.Close()
@@ -183,7 +183,7 @@ func handleP2PVisitor(localTcpConn net.Conn, config *config.CommonConfig, l *con
 func newUdpConn(localAddr string, config *config.CommonConfig, l *config.LocalServer) {
 	lock.Lock()
 	defer lock.Unlock()
-	remoteConn, err := NewConn(config.Tp, config.VKey, config.Server, common.WORK_P2P, config.ProxyUrl)
+	remoteConn, err := NewConn(config.Tp, config.VKey, config.Server, common.WORK_P2P, config.ProxyUrl, config.Fingerprint)
 	if err != nil {
 		logs.Error("Local connection server failed ", err.Error())
 		return

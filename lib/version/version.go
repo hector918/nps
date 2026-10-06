@@ -6,10 +6,6 @@ package version
 // rather than a const so the build can stamp it:
 //
 //	-X ehang.io/nps/lib/version.VERSION=0.26.10+g1a2b3c4
-//
-// Only this string is free-form. GetVersion below is compared byte for byte
-// by the server, so stamping that one instead would stop this client from
-// connecting to every server not updated in lockstep with it.
 var VERSION = "v0.27.11-hz1"
 
 // Fork names the repository this binary was built from. Upstream has been
@@ -18,18 +14,12 @@ var VERSION = "v0.27.11-hz1"
 const Fork = "hector918/nps"
 
 // ForkMarker must appear in VERSION for every build from this fork, including
-// the tag the release pipeline stamps in. The server uses it to tell whether a
-// connected client understands the control messages this fork added -- an
-// older client would misparse them -- so build.release.sh refuses to build a
+// the tag the release pipeline stamps in; build.release.sh refuses to build a
 // tag without it.
 const ForkMarker = "-hz"
 
-// Compulsory minimum version, Minimum downward compatibility to this version
-//
-// Do not touch this. The server compares it byte for byte against what a
-// connecting client sends, so a fork marker here would lock this build out of
-// every server not upgraded in the same breath. The fork identity belongs in
-// VERSION and Fork above, which are only ever displayed.
-func GetVersion() string {
-	return "0.26.0"
-}
+// Protocol is the revision of the bridge protocol: the hello a client sends
+// inside TLS, and what the mux and the control messages after it mean. The
+// server turns away a client that reports a different one, so it changes
+// whenever either side could no longer understand the other.
+const Protocol = "2"

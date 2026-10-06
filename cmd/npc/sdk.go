@@ -11,12 +11,12 @@ import (
 var cl *client.TRPClient
 
 //export StartClientByVerifyKey
-func StartClientByVerifyKey(serverAddr, verifyKey, connType, proxyUrl *C.char) int {
+func StartClientByVerifyKey(serverAddr, verifyKey, connType, proxyUrl, fingerprint *C.char) int {
 	_ = logs.SetLogger("store")
 	if cl != nil {
 		cl.Close()
 	}
-	cl = client.NewRPClient(C.GoString(serverAddr), C.GoString(verifyKey), C.GoString(connType), C.GoString(proxyUrl), nil, 60)
+	cl = client.NewRPClient(C.GoString(serverAddr), C.GoString(verifyKey), C.GoString(connType), C.GoString(proxyUrl), C.GoString(fingerprint), nil, 60)
 	cl.Start()
 	return 1
 }

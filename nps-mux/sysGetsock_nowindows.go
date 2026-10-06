@@ -25,6 +25,7 @@ func sysGetSock(raw syscall.RawConn) (bufferSize int, err error) {
 // reading through it switched the connection to blocking mode, which turns
 // off its deadlines.
 func getRawConn(c net.Conn) (syscall.RawConn, error) {
+	c = underlying(c)
 	switch c.(type) {
 	case *net.TCPConn, *net.UDPConn:
 		return c.(syscall.Conn).SyscallConn()

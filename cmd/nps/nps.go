@@ -19,7 +19,6 @@ import (
 	"ehang.io/nps/web/routers"
 
 	"ehang.io/nps/lib/common"
-	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/daemon"
 	"github.com/astaxie/beego"
 	"github.com/astaxie/beego/logs"
@@ -204,10 +203,8 @@ func run() {
 		logs.Error("Getting bridge_port error", err)
 		os.Exit(0)
 	}
-	logs.Info("the version of server is %s ,allow client core version to be %s", version.VERSION, version.GetVersion())
+	logs.Info("the version of server is %s, the bridge protocol is %s", version.VERSION, version.Protocol)
 	connection.InitConnectionService()
-	//crypt.InitTls(filepath.Join(common.GetRunPath(), "conf", "server.pem"), filepath.Join(common.GetRunPath(), "conf", "server.key"))
-	crypt.InitTls()
 	tool.InitAllowPort()
 	tool.StartSystemInfo()
 	timeout, err := beego.AppConfig.Int("disconnect_timeout")

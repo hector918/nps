@@ -18,9 +18,7 @@ import (
 	"time"
 
 	"ehang.io/nps/lib/common"
-	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
-	"ehang.io/nps/lib/pmux"
 	"ehang.io/nps/lib/rate"
 	"github.com/xtaci/kcp-go"
 )
@@ -139,31 +137,16 @@ func (s *Conn) ReadFlag() (string, error) {
 	return string(buf), binary.Read(s, binary.LittleEndian, &buf)
 }
 
-//set alive
-func (s *Conn) SetAlive(tp string) {
-	switch s.Conn.(type) {
-	case *kcp.UDPSession:
-		s.Conn.(*kcp.UDPSession).SetReadDeadline(time.Time{})
-	case *net.TCPConn:
-		conn := s.Conn.(*net.TCPConn)
-		conn.SetReadDeadline(time.Time{})
-		//conn.SetKeepAlive(false)
-		//conn.SetKeepAlivePeriod(time.Duration(2 * time.Second))
-	case *pmux.PortConn:
-		s.Conn.(*pmux.PortConn).SetReadDeadline(time.Time{})
-	}
+// SetAlive clears the read deadline a handshake set. The connection is a TLS
+// conn by now, not a bare socket, so this goes through the net.Conn interface
+// rather than guessing the concrete type.
+func (s *Conn) SetAlive() {
+	_ = s.Conn.SetReadDeadline(time.Time{})
 }
 
 //set read deadline
 func (s *Conn) SetReadDeadlineBySecond(t time.Duration) {
-	switch s.Conn.(type) {
-	case *kcp.UDPSession:
-		s.Conn.(*kcp.UDPSession).SetReadDeadline(time.Now().Add(time.Duration(t) * time.Second))
-	case *net.TCPConn:
-		s.Conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(time.Duration(t) * time.Second))
-	case *pmux.PortConn:
-		s.Conn.(*pmux.PortConn).SetReadDeadline(time.Now().Add(time.Duration(t) * time.Second))
-	}
+	_ = s.Conn.SetReadDeadline(time.Now().Add(t * time.Second))
 }
 
 //get link info from conn
@@ -406,13 +389,13 @@ func CopyWaitGroup(conn1, conn2 net.Conn, crypt bool, snappy bool, rate *rate.Ra
 }
 
 //get crypt or snappy conn
+// GetConn wraps conn for a stream. cpt is no longer used: every stream already
+// travels inside the bridge's TLS connection, and a TLS session of its own per
+// stream cost two round trips on every new one for nothing. It stays in the
+// signature, and in the config files and the web UI that still carry a crypt
+// switch, so those keep parsing.
 func GetConn(conn net.Conn, cpt, snappy bool, rt *rate.Rate, isServer bool) io.ReadWriteCloser {
-	if cpt {
-		if isServer {
-			return rate.NewRateConn(crypt.NewTlsServerConn(conn), rt)
-		}
-		return rate.NewRateConn(crypt.NewTlsClientConn(conn), rt)
-	} else if snappy {
+	if snappy {
 		return rate.NewRateConn(NewSnappyConn(conn), rt)
 	}
 	return rate.NewRateConn(conn, rt)

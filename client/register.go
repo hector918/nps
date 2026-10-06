@@ -8,8 +8,8 @@ import (
 	"ehang.io/nps/lib/common"
 )
 
-func RegisterLocalIp(server string, vKey string, tp string, proxyUrl string, hour int) {
-	c, err := NewConn(tp, vKey, server, common.WORK_REGISTER, proxyUrl)
+func RegisterLocalIp(server string, vKey string, tp string, proxyUrl string, fingerprint string, hour int) {
+	c, err := NewConn(tp, vKey, server, common.WORK_REGISTER, proxyUrl, fingerprint)
 	if err != nil {
 		log.Fatalln(err)
 	}

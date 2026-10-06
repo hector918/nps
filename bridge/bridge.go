@@ -1,20 +1,22 @@
 package bridge
 
 import (
+	"crypto/tls"
 	"ehang.io/nps-mux"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/conn"
-	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/selfupdate"
 	"ehang.io/nps/lib/sysstat"
@@ -62,6 +64,7 @@ type Bridge struct {
 	ipVerify       bool
 	runList        sync.Map //map[int]interface{}
 	disconnectTime int
+	tlsConfig      *tls.Config
 }
 
 func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList sync.Map, disconnectTime int) *Bridge {
@@ -79,27 +82,40 @@ func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList sync.Ma
 }
 
 func (s *Bridge) StartTunnel() error {
+	// Every connection to the bridge is TLS, so there is nothing to serve
+	// without the key.
+	tlsConfig, fingerprint, err := bridgetls.LoadOrCreate(filepath.Join(common.GetRunPath(), "conf"))
+	if err != nil {
+		return fmt.Errorf("bridge TLS key: %w", err)
+	}
+	s.tlsConfig = tlsConfig
+	logs.Notice("bridge fingerprint, set it as server_fingerprint on every client: %s", fingerprint)
 	go s.ping()
 	if s.tunnelType == "kcp" {
 		logs.Info("server start, the bridge type is %s, the bridge port is %d", s.tunnelType, s.TunnelPort)
-		return conn.NewKcpListenerAndProcess(beego.AppConfig.String("bridge_ip")+":"+beego.AppConfig.String("bridge_port"), func(c net.Conn) {
-			s.cliProcess(conn.NewConn(c))
-		})
-	} else {
-		listener, err := connection.GetBridgeListener(s.tunnelType)
-		if err != nil {
-			logs.Error(err)
-			os.Exit(0)
-			return err
-		}
-		conn.Accept(listener, func(c net.Conn) {
-			s.cliProcess(conn.NewConn(c))
-		})
+		return conn.NewKcpListenerAndProcess(beego.AppConfig.String("bridge_ip")+":"+beego.AppConfig.String("bridge_port"), s.serve)
 	}
+	listener, err := connection.GetBridgeListener(s.tunnelType)
+	if err != nil {
+		logs.Error(err)
+		os.Exit(0)
+		return err
+	}
+	conn.Accept(listener, s.serve)
 	return nil
 }
 
-//get health information form client
+// serve secures a freshly accepted connection and hands it on.
+func (s *Bridge) serve(c net.Conn) {
+	t, err := bridgetls.Server(c, s.tlsConfig)
+	if err != nil {
+		logs.Info("TLS handshake with %s failed: %s", c.RemoteAddr(), err.Error())
+		return
+	}
+	s.cliProcess(conn.NewConn(t))
+}
+
+// get health information form client
 func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	for {
 		if info, status, err := c.GetHealthInfo(); err != nil {
@@ -171,7 +187,7 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	s.DelClient(id)
 }
 
-//验证失败，返回错误验证flag，并且关闭连接
+// 验证失败，返回错误验证flag，并且关闭连接
 func (s *Bridge) verifyError(c *conn.Conn) {
 	c.Write([]byte(common.VERIFY_EER))
 }
@@ -180,50 +196,52 @@ func (s *Bridge) verifySuccess(c *conn.Conn) {
 	c.Write([]byte(common.VERIFY_SUCCESS))
 }
 
+// cliProcess reads the hello of a connection that is already TLS and pinned:
+// the protocol revision, the client's version, the digest of its vkey and what
+// the connection is for, all in one flight, and answers with a single verdict.
+// Nothing is echoed back before the verdict, so a client may send the first
+// bytes of the work itself right behind its hello.
 func (s *Bridge) cliProcess(c *conn.Conn) {
-	//read test flag
-	if _, err := c.GetShortContent(3); err != nil {
-		logs.Info("The client %s connect error", c.Conn.RemoteAddr(), err.Error())
-		return
-	}
-	//version check
-	if b, err := c.GetShortLenContent(); err != nil || string(b) != version.GetVersion() {
-		logs.Info("The client %s version does not match", c.Conn.RemoteAddr())
+	c.SetReadDeadlineBySecond(10)
+	protocol, err := c.GetShortLenContent()
+	if err != nil {
+		logs.Info("The client %s connect error %s", c.Conn.RemoteAddr(), err.Error())
 		c.Close()
 		return
 	}
-	//version get
-	var vs []byte
-	var err error
-	if vs, err = c.GetShortLenContent(); err != nil {
-		logs.Info("get client %s version error", err.Error())
+	vs, err := c.GetShortLenContent()
+	if err != nil {
+		logs.Info("get client %s version error %s", c.Conn.RemoteAddr(), err.Error())
 		c.Close()
 		return
 	}
-	//write server version to client
-	c.Write([]byte(crypt.Md5(version.GetVersion())))
-	c.SetReadDeadlineBySecond(5)
-	var buf []byte
-	//get vKey from client
-	if buf, err = c.GetShortContent(32); err != nil {
+	buf, err := c.GetShortContent(32)
+	if err != nil {
 		c.Close()
 		return
 	}
-	//verify
+	flag, err := c.ReadFlag()
+	if err != nil {
+		logs.Warn(err, flag)
+		c.Close()
+		return
+	}
+	if string(protocol) != version.Protocol {
+		logs.Info("The client %s speaks protocol %q, this server %q", c.Conn.RemoteAddr(), protocol, version.Protocol)
+		c.Write([]byte(common.VERIFY_PROTOCOL))
+		c.Close()
+		return
+	}
 	id, err := file.GetDb().GetIdByVerifyKey(string(buf), c.Conn.RemoteAddr().String())
 	if err != nil {
 		logs.Info("Current client connection validation error, close this client:", c.Conn.RemoteAddr())
 		s.verifyError(c)
+		c.Close()
 		return
-	} else {
-		s.verifySuccess(c)
 	}
-	if flag, err := c.ReadFlag(); err == nil {
-		s.typeDeal(flag, c, id, string(vs))
-	} else {
-		logs.Warn(err, flag)
-	}
-	return
+	s.verifySuccess(c)
+	c.SetAlive()
+	s.typeDeal(flag, c, id, string(vs))
 }
 
 // SendUpdate asks a connected client to replace its own binary. Only the
@@ -247,16 +265,6 @@ func (s *Bridge) SendUpdate(id int, tag string) error {
 	if c.signal == nil {
 		return errors.New("the client has no control connection")
 	}
-	// A client that predates WORK_UPDATE has no default case in its control
-	// loop: it would read the tag's length prefix as the next flag and stay
-	// misaligned for the rest of the connection. Since a fleet is entirely
-	// old clients on the day this ships, refusing is the difference between
-	// "the button does nothing yet" and "the button breaks every node's
-	// control channel one at a time".
-	if !supportsUpdate(c.Version) {
-		return errors.New("this client is too old to accept a pushed update, update it in place first")
-	}
-
 	c.signalMu.Lock()
 	defer c.signalMu.Unlock()
 	if _, err := c.signal.Write([]byte(common.WORK_UPDATE)); err != nil {
@@ -264,12 +272,6 @@ func (s *Bridge) SendUpdate(id int, tag string) error {
 	}
 	// The tag is always written, empty meaning the latest release.
 	return c.signal.WriteLenContent([]byte(tag))
-}
-
-// supportsUpdate reports whether a client's reported version is one of ours,
-// which is what the fork marker in version.VERSION is for.
-func supportsUpdate(clientVersion string) bool {
-	return strings.Contains(clientVersion, version.ForkMarker)
 }
 
 // statsHistory is the host stats history of a client. It outlives the
@@ -326,7 +328,7 @@ func (s *Bridge) DelClient(id int) {
 	}
 }
 
-//use different
+// use different
 func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 	isPub := file.GetDb().IsPubClient(id)
 	switch typeVal {
@@ -335,7 +337,7 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			c.Close()
 			return
 		}
-		tcpConn, ok := c.Conn.(*net.TCPConn)
+		tcpConn, ok := bridgetls.TCPConn(c.Conn)
 		if ok {
 			// add tcp keep alive option for signal connection
 			_ = tcpConn.SetKeepAlive(true)
@@ -408,11 +410,11 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			}
 		}
 	}
-	c.SetAlive(s.tunnelType)
+	c.SetAlive()
 	return
 }
 
-//register ip
+// register ip
 func (s *Bridge) register(c *conn.Conn) {
 	var hour int32
 	if err := binary.Read(c, binary.LittleEndian, &hour); err == nil {
@@ -496,7 +498,7 @@ func (s *Bridge) ping() {
 	}
 }
 
-//get config and add task from client config
+// get config and add task from client config
 func (s *Bridge) getConfig(c *conn.Conn, isPub bool, client *file.Client) {
 	var fail bool
 loop:
