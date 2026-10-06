@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/file"
 	"ehang.io/nps/lib/install"
 	"ehang.io/nps/lib/version"
@@ -90,6 +92,16 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] != "service" {
 		switch os.Args[1] {
+		case "fingerprint":
+			// What to give clients as server_fingerprint. It makes the bridge
+			// key if there is none yet, so it can be run before this version
+			// ever serves, which is what lets the clients be set up first.
+			_, fp, err := bridgetls.LoadOrCreate(filepath.Join(common.GetRunPath(), "conf"))
+			if err != nil {
+				log.Fatalln(err)
+			}
+			fmt.Println(fp)
+			return
 		case "reload":
 			daemon.InitDaemon("nps", common.GetRunPath(), common.GetTmpPath())
 			return
