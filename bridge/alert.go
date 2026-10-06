@@ -96,3 +96,9 @@ func Alerts() []Alert {
 	}
 	return out
 }
+
+// Raise records an alert that comes from the server's own state and not from a
+// connection, such as a setting that leaves it open.
+func Raise(kind, detail string) {
+	raise(kind, "", 0, detail)
+}

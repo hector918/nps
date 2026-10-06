@@ -12,7 +12,7 @@ https_proxy_port | 域名代理https代理监听端口
 http_proxy_port | 域名代理http代理监听端口
 auth_key|web api密钥
 bridge_type|客户端与服务端连接方式kcp或tcp
-public_vkey|客户端以配置文件模式启动时的密钥，设置为空表示关闭客户端配置文件连接模式
+public_vkey|客户端以配置文件模式启动时的公共密钥，**默认留空，设置为空表示关闭该模式**。任何持有它并且能连到桥接端口的人都可以创建客户端、在服务器的端口上开隧道，所以除非有客户端需要，否则不要设置；要用就用 16 位以上的随机字符串。启动时如果设置了它，服务端会在日志里警告（过短或常见的值会警告得更重）
 ip_limit|是否限制ip访问，true或false或忽略
 flow_store_interval|服务端流量数据持久化间隔，单位分钟，忽略表示不持久化
 log_level|日志输出级别

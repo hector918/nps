@@ -205,6 +205,7 @@ func run() {
 	}
 	logs.Info("the version of server is %s, the bridge protocol is %s", version.VERSION, version.Protocol)
 	connection.InitConnectionService()
+	server.WarnUnsafeConfig()
 	tool.InitAllowPort()
 	tool.StartSystemInfo()
 	timeout, err := beego.AppConfig.Int("disconnect_timeout")
