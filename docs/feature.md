@@ -143,7 +143,7 @@ bridge fingerprint, set it as server_fingerprint on every client: sha256:5b0e80e
 
 - 配置文件：`[common]`里写`server_fingerprint=sha256:...`
 - 命令行：`npc -server=... -vkey=... -server_fp=sha256:...`
-- 环境变量：`NPC_SERVER_FP`
+- 环境变量：`NPC_SERVER_FP`（只对命令行方式有效：`npc -server=...`、`register`、私密代理/p2p 的 `-password` 方式；配置文件请写`server_fingerprint`）
 
 没有设置或指纹不符时，客户端会拒绝连接，错误信息里带有服务端实际出示的指纹，核对无误后复制过去即可。指纹是公钥的 SHA-256，所以只要保留`conf/bridge.key`，重启或更换证书都不会改变它；删除这两个文件会生成新的指纹，所有客户端都要重新设置。
 

@@ -22,9 +22,10 @@ func InitConnectionService() {
 
 	// The bridge is TLS from its first byte, and a port shared with the https
 	// proxy could not tell a client's handshake from a browser's.
-	if bridgePort == httpPort || bridgePort == httpsPort || bridgePort == webPort {
+	// A kcp bridge listens on UDP and shares nothing with them.
+	if beego.AppConfig.String("bridge_type") != "kcp" && (bridgePort == httpPort || bridgePort == httpsPort || bridgePort == webPort) {
 		logs.Error("bridge_port %s is also the http, https or web port: the bridge is TLS only and needs a port of its own", bridgePort)
-		os.Exit(0)
+		os.Exit(1)
 	}
 }
 

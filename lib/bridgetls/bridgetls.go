@@ -64,10 +64,14 @@ func ParsePin(s string) (string, error) {
 func LoadOrCreate(dir string) (*tls.Config, string, error) {
 	keyPath := filepath.Join(dir, "bridge.key")
 	crtPath := filepath.Join(dir, "bridge.crt")
+	// The certificate is the last file to appear (see create), so its being
+	// there means the pair is complete.
 	if _, err := os.Stat(crtPath); os.IsNotExist(err) {
 		if err := create(keyPath, crtPath); err != nil {
 			return nil, "", err
 		}
+	} else if err != nil {
+		return nil, "", err
 	}
 	cert, err := tls.LoadX509KeyPair(crtPath, keyPath)
 	if err != nil {
@@ -111,10 +115,39 @@ func create(keyPath, crtPath string) error {
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDer}), 0o600); err != nil {
+	// Each file is written whole and then renamed into place, the key first:
+	// a crash can leave a stray key, which the next start replaces, but never
+	// a certificate without its key or a half-written file that the server
+	// would then refuse to start on, every time, until someone deleted it.
+	if err := writeAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDer}), 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(crtPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	return writeAtomic(crtPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+}
+
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // ClientConfig verifies the server by pin alone. pin may be empty, in which

@@ -19,10 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/config"
 	"ehang.io/nps/lib/conn"
-	"ehang.io/nps/lib/bridgetls"
 	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/version"
 	"github.com/astaxie/beego/logs"

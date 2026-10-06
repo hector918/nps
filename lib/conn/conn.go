@@ -389,12 +389,19 @@ func CopyWaitGroup(conn1, conn2 net.Conn, crypt bool, snappy bool, rate *rate.Ra
 }
 
 //get crypt or snappy conn
+var cryptNoopOnce sync.Once
+
 // GetConn wraps conn for a stream. cpt is no longer used: every stream already
 // travels inside the bridge's TLS connection, and a TLS session of its own per
 // stream cost two round trips on every new one for nothing. It stays in the
 // signature, and in the config files and the web UI that still carry a crypt
 // switch, so those keep parsing.
 func GetConn(conn net.Conn, cpt, snappy bool, rt *rate.Rate, isServer bool) io.ReadWriteCloser {
+	if cpt {
+		cryptNoopOnce.Do(func() {
+			logs.Warn("crypt is set on a client or tunnel, and does nothing: the bridge connection is always TLS")
+		})
+	}
 	if snappy {
 		return rate.NewRateConn(NewSnappyConn(conn), rt)
 	}

@@ -115,7 +115,7 @@ func (s *Bridge) serve(c net.Conn) {
 	s.cliProcess(conn.NewConn(t))
 }
 
-// get health information form client
+//get health information form client
 func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	for {
 		if info, status, err := c.GetHealthInfo(); err != nil {
@@ -187,7 +187,7 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 	s.DelClient(id)
 }
 
-// 验证失败，返回错误验证flag，并且关闭连接
+//验证失败，返回错误验证flag，并且关闭连接
 func (s *Bridge) verifyError(c *conn.Conn) {
 	c.Write([]byte(common.VERIFY_EER))
 }
@@ -209,6 +209,15 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 		c.Close()
 		return
 	}
+	if string(protocol) != version.Protocol {
+		// Judged before anything else is read: a client of another revision may
+		// lay out the rest of its hello differently, and would leave this
+		// reading until the deadline instead of hearing why.
+		logs.Info("The client %s speaks protocol %q, this server %q", c.Conn.RemoteAddr(), protocol, version.Protocol)
+		c.Write([]byte(common.VERIFY_PROTOCOL))
+		c.Close()
+		return
+	}
 	vs, err := c.GetShortLenContent()
 	if err != nil {
 		logs.Info("get client %s version error %s", c.Conn.RemoteAddr(), err.Error())
@@ -223,12 +232,6 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 	flag, err := c.ReadFlag()
 	if err != nil {
 		logs.Warn(err, flag)
-		c.Close()
-		return
-	}
-	if string(protocol) != version.Protocol {
-		logs.Info("The client %s speaks protocol %q, this server %q", c.Conn.RemoteAddr(), protocol, version.Protocol)
-		c.Write([]byte(common.VERIFY_PROTOCOL))
 		c.Close()
 		return
 	}
@@ -328,7 +331,7 @@ func (s *Bridge) DelClient(id int) {
 	}
 }
 
-// use different
+//use different
 func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 	isPub := file.GetDb().IsPubClient(id)
 	switch typeVal {
@@ -414,7 +417,7 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 	return
 }
 
-// register ip
+//register ip
 func (s *Bridge) register(c *conn.Conn) {
 	var hour int32
 	if err := binary.Read(c, binary.LittleEndian, &hour); err == nil {

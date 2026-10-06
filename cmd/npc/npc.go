@@ -111,6 +111,7 @@ func main() {
 			}
 		case "register":
 			flag.CommandLine.Parse(os.Args[2:])
+			fingerprintFromEnv()
 			client.RegisterLocalIp(*serverAddr, *verifyKey, *connType, *proxyUrl, *serverFp, *registerTime)
 		case "update":
 			// Deliberately not install.UpdateNpc: that one downloads from
@@ -212,8 +213,17 @@ func (p *npc) run() error {
 	return nil
 }
 
+// fingerprintFromEnv lets NPC_SERVER_FP stand in for -server_fp, for every way
+// of running npc that takes the flag.
+func fingerprintFromEnv() {
+	if *serverFp == "" {
+		*serverFp = os.Getenv("NPC_SERVER_FP")
+	}
+}
+
 func run() {
 	common.InitPProfFromArg(*pprofAddr)
+	fingerprintFromEnv()
 	//p2p or secret command
 	if *password != "" {
 		commonConfig := new(config.CommonConfig)
@@ -237,9 +247,6 @@ func run() {
 	}
 	if *verifyKey == "" {
 		*verifyKey, _ = env["NPC_SERVER_VKEY"]
-	}
-	if *serverFp == "" {
-		*serverFp, _ = env["NPC_SERVER_FP"]
 	}
 	logs.Info("the version of client is %s, the protocol is %s", version.VERSION, version.Protocol)
 	// Arm the update watchdog only here, past the local-server branch above.
