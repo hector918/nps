@@ -110,6 +110,12 @@ func (s *Mux) NewConn() (*conn, error) {
 	conn := NewConn(s.getId(), s)
 	//it must be Set before send
 	s.connMap.Set(conn.connId, conn)
+	if s.IsClose {
+		// closed after the check above: connMap.Close may already have run
+		// and would never see this conn
+		_ = conn.Close()
+		return nil, errors.New("the mux has closed")
+	}
 	s.sendInfo(muxNewConn, conn.connId, nil)
 	//Set a timer timeout 120 second
 	timer := time.NewTimer(time.Minute * 2)
@@ -117,8 +123,15 @@ func (s *Mux) NewConn() (*conn, error) {
 	select {
 	case <-conn.connStatusOkCh:
 		return conn, nil
+	case <-conn.connStatusFailCh:
+		_ = conn.Close()
+		return nil, errors.New("create connection fail，the server refused the connection")
+	case <-conn.closedCh:
+		// a closing mux closes every conn in its map, this one included
+		return nil, errors.New("create connection fail，the mux has closed")
 	case <-timer.C:
 	}
+	_ = conn.Close()
 	return nil, errors.New("create connection fail，the server refused the connection")
 }
 
@@ -339,10 +352,16 @@ func (s *Mux) readSession() {
 					}
 					continue
 				case muxNewConnOk: //connection ok
-					connection.connStatusOkCh <- struct{}{}
+					select {
+					case connection.connStatusOkCh <- struct{}{}:
+					default:
+					}
 					continue
 				case muxNewConnFail:
-					connection.connStatusFailCh <- struct{}{}
+					select {
+					case connection.connStatusFailCh <- struct{}{}:
+					default:
+					}
 					continue
 				case muxMsgSendOk:
 					if connection.isClose {

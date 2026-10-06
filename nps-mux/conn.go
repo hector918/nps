@@ -16,6 +16,7 @@ type conn struct {
 	net.Conn
 	connStatusOkCh   chan struct{}
 	connStatusFailCh chan struct{}
+	closedCh         chan struct{} // closed by Close, wakes a NewConn still waiting for its OK
 	connId           int32
 	isClose          bool
 	closingFlag      bool // closing conn flag
@@ -26,8 +27,12 @@ type conn struct {
 
 func NewConn(connId int32, mux *Mux) *conn {
 	c := &conn{
-		connStatusOkCh:   make(chan struct{}),
-		connStatusFailCh: make(chan struct{}),
+		// Buffered, and sent to without blocking: the reply to a NewConn that
+		// has already given up has nobody to receive it, and the read loop
+		// that delivers it must not wait for one.
+		connStatusOkCh:   make(chan struct{}, 1),
+		connStatusFailCh: make(chan struct{}, 1),
+		closedCh:         make(chan struct{}),
 		connId:           connId,
 		receiveWindow:    new(receiveWindow),
 		sendWindow:       new(sendWindow),
@@ -71,6 +76,7 @@ func (s *conn) Close() (err error) {
 
 func (s *conn) closeProcess() {
 	s.isClose = true
+	close(s.closedCh)
 	s.receiveWindow.mux.connMap.Delete(s.connId)
 	if !s.receiveWindow.mux.IsClose {
 		// if server or user close the conn while reading, will Get a io.EOF
