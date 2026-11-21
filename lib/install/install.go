@@ -19,21 +19,24 @@ import (
 
 // Keep it in sync with the template from service_sysv_linux.go file
 // Use "ps | grep -v grep | grep $(get_pid)" because "ps PID" may not work on OpenWrt
+// The templates use the mini engine of kardianos/service v1.3.0: bare keys
+// ({{Path}}), no leading dot. The systemd unit is the library's own; see
+// cmd/npc and cmd/nps for the options set on it.
 const SysvScript = `#!/bin/sh
 # For RedHat and cousins:
 # chkconfig: - 99 01
-# description: {{.Description}}
-# processname: {{.Path}}
+# description: {{Description}}
+# processname: {{Path}}
 ### BEGIN INIT INFO
-# Provides:          {{.Path}}
+# Provides:          {{Path}}
 # Required-Start:
 # Required-Stop:
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: {{.DisplayName}}
-# Description:       {{.Description}}
+# Short-Description: {{DisplayName}}
+# Description:       {{Description}}
 ### END INIT INFO
-cmd="{{.Path}}{{range .Arguments}} {{.|cmd}}{{end}}"
+cmd="{{Path}}{{range Arguments}} {{. | cmd}}{{end}}"
 name=$(basename $(readlink -f $0))
 pid_file="/var/run/$name.pid"
 stdout_log="/var/log/$name.log"
@@ -51,7 +54,7 @@ case "$1" in
             echo "Already started"
         else
             echo "Starting $name"
-            {{if .WorkingDirectory}}cd '{{.WorkingDirectory}}'{{end}}
+            {{if WorkingDirectory}}cd '{{WorkingDirectory}}'{{end}}
             $cmd >> "$stdout_log" 2>> "$stderr_log" &
             echo $! > "$pid_file"
             if ! is_running; then
@@ -108,31 +111,6 @@ case "$1" in
     ;;
 esac
 exit 0
-`
-
-const SystemdScript = `[Unit]
-Description={{.Description}}
-ConditionFileIsExecutable={{.Path|cmdEscape}}
-{{range $i, $dep := .Dependencies}} 
-{{$dep}} {{end}}
-[Service]
-LimitNOFILE=65536
-StartLimitInterval=5
-StartLimitBurst=10
-ExecStart={{.Path|cmdEscape}}{{range .Arguments}} {{.|cmd}}{{end}}
-{{if .ChRoot}}RootDirectory={{.ChRoot|cmd}}{{end}}
-{{if .WorkingDirectory}}WorkingDirectory={{.WorkingDirectory|cmdEscape}}{{end}}
-{{if .UserName}}User={{.UserName}}{{end}}
-{{if .ReloadSignal}}ExecReload=/bin/kill -{{.ReloadSignal}} "$MAINPID"{{end}}
-{{if .PIDFile}}PIDFile={{.PIDFile|cmd}}{{end}}
-{{if and .LogOutput .HasOutputFileSupport -}}
-StandardOutput=file:/var/log/{{.Name}}.out
-StandardError=file:/var/log/{{.Name}}.err
-{{- end}}
-Restart=always
-RestartSec=120
-[Install]
-WantedBy=multi-user.target
 `
 
 func UpdateNps() {

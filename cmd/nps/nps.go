@@ -73,7 +73,8 @@ func main() {
 		svcConfig.Dependencies = []string{
 			"Requires=network.target",
 			"After=network-online.target syslog.target"}
-		svcConfig.Option["SystemdScript"] = install.SystemdScript
+		// The unit itself is the library's; only the fd limit differs from it.
+		svcConfig.Option["LimitNOFILE"] = 65536
 		svcConfig.Option["SysvScript"] = install.SysvScript
 	}
 	prg := &nps{}
