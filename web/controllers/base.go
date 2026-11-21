@@ -20,6 +20,20 @@ type BaseController struct {
 	actionName     string
 }
 
+// apiKeyValid says whether md5Key proves knowledge of the configured auth_key
+// at the given time. With no auth_key configured nothing proves it: the proof
+// is md5(auth_key+timestamp), so with an empty key it is md5(timestamp), which
+// anyone can compute, and it used to log them in as admin.
+func apiKeyValid(configKey, md5Key string, timestamp int, now int64) bool {
+	if configKey == "" || md5Key == "" {
+		return false
+	}
+	if math.Abs(float64(now-int64(timestamp))) > 20 {
+		return false
+	}
+	return crypt.Md5(configKey+strconv.Itoa(timestamp)) == md5Key
+}
+
 //初始化参数
 func (s *BaseController) Prepare() {
 	s.Data["web_base_url"] = beego.AppConfig.String("web_base_url")
@@ -33,7 +47,7 @@ func (s *BaseController) Prepare() {
 	timestamp := s.GetIntNoErr("timestamp")
 	configKey := beego.AppConfig.String("auth_key")
 	timeNowUnix := time.Now().Unix()
-	if !(md5Key != "" && (math.Abs(float64(timeNowUnix-int64(timestamp))) <= 20) && (crypt.Md5(configKey+strconv.Itoa(timestamp)) == md5Key)) {
+	if !apiKeyValid(configKey, md5Key, timestamp, timeNowUnix) {
 		if s.GetSession("auth") != true {
 			s.Redirect(beego.AppConfig.String("web_base_url")+"/login/index", 302)
 		}

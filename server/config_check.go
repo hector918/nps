@@ -36,6 +36,14 @@ func UnsafeConfig(get func(string) string) []ConfigWarning {
 			out = append(out, ConfigWarning{"public-vkey", "public_vkey is set: anyone who has it can connect, create clients and open tunnels on this server. Empty it in nps.conf unless a client needs it."})
 		}
 	}
+	if k := get("auth_key"); k != "" {
+		if len(k) < minPublicVkeyLen || guessable[strings.ToLower(k)] {
+			out = append(out, ConfigWarning{"auth-key", "auth_key is set and can be guessed: it logs anyone who has it in to the web API as admin. Use 16 or more random characters, or empty it in nps.conf."})
+		}
+		if get("auth_crypt_key") == "1234567812345678" {
+			out = append(out, ConfigWarning{"auth-crypt-key", "auth_crypt_key is still the value nps.conf ships with, so /auth/getauthkey is switched off: it would hand the auth_key to anyone, who could decrypt it with that public key. Set auth_crypt_key to 16 random characters to turn it back on."})
+		}
+	}
 	user, pass := get("web_username"), get("web_password")
 	if (user == "admin" && pass == "123") || pass == "" {
 		out = append(out, ConfigWarning{"default-web-login", "the web panel has the login it shipped with, or none. It manages every client, tunnel and update, so set web_username and web_password in nps.conf, " +
