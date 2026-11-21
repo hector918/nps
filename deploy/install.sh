@@ -10,7 +10,7 @@
 #   (no --server/--vkey/--config: asks on the terminal, and for a config file
 #    lets you paste its contents)
 #   ... --type kcp                      bridge type, default tcp
-#   ... --tag v0.27.13-hz1              pin a release instead of the latest
+#   ... --tag v0.27.14-hz1              pin a release instead of the latest
 #   ... --file /tmp/npc                 install a binary already on this host
 #   NPC_SERVER=... NPC_VKEY=... sudo -E bash install.sh   same, from the environment
 #
