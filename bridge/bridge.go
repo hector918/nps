@@ -405,6 +405,12 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			if v, ok := s.Client.Load(t.Client.Id); !ok {
 				return
 			} else {
+				// With either unset the address below would be "ip:" or ":port",
+				// which the client can only fail on, far from the cause.
+				if beego.AppConfig.String("p2p_ip") == "" || beego.AppConfig.String("p2p_port") == "" {
+					logs.Error("p2p is not set up on this server: set p2p_ip and p2p_port in nps.conf and open UDP p2p_port to p2p_port+2")
+					return
+				}
 				svrAddr := beego.AppConfig.String("p2p_ip") + ":" + beego.AppConfig.String("p2p_port")
 				if err != nil {
 					logs.Warn("get local udp addr error")

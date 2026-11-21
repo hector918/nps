@@ -95,6 +95,9 @@ func StartNewServer(bridgePort int, cnf *file.Tunnel, bridgeType string, bridgeD
 			os.Exit(0)
 		}
 	}()
+	if beego.AppConfig.String("p2p_port") == "" {
+		logs.Info("p2p is off: p2p_port is not set in nps.conf")
+	}
 	if p, err := beego.AppConfig.Int("p2p_port"); err == nil {
 		go proxy.NewP2PServer(p).Start()
 		go proxy.NewP2PServer(p + 1).Start()

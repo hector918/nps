@@ -355,6 +355,15 @@ func handleP2PUdp(localAddr, rAddr, md5Password, role string) (remoteAddress str
 	if err != nil {
 		return
 	}
+	// Every error below used to return with this socket still bound, so the
+	// caller's retries on the same local address all failed with "address
+	// already in use" and hid the real error. sendP2PTestMsg closes it itself.
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			localConn.Close()
+		}
+	}()
 	err = getRemoteAddressFromServer(rAddr, localConn, md5Password, role, 0)
 	if err != nil {
 		logs.Error(err)
@@ -371,6 +380,9 @@ func handleP2PUdp(localAddr, rAddr, md5Password, role string) (remoteAddress str
 		return
 	}
 	var remoteAddr1, remoteAddr2, remoteAddr3 string
+	// Without a deadline this waits forever when the server never answers
+	// (its UDP ports blocked, say), and the caller holds its lock all that time.
+	localConn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	for {
 		buf := make([]byte, 1024)
 		if n, addr, er := localConn.ReadFromUDP(buf); er != nil {
@@ -392,6 +404,8 @@ func handleP2PUdp(localAddr, rAddr, md5Password, role string) (remoteAddress str
 			break
 		}
 	}
+	localConn.SetReadDeadline(time.Time{})
+	handedOver = true
 	if remoteAddress, err = sendP2PTestMsg(localConn, remoteAddr1, remoteAddr2, remoteAddr3); err != nil {
 		return
 	}
