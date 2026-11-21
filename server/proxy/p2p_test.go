@@ -137,16 +137,6 @@ func TestListenLoopEndToEnd(t *testing.T) {
 	s := NewP2PServer(port)
 	s.known = func(md5 string) bool { return md5 == crypt.Md5("secret") }
 	go s.Start()
-	srv := &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: port}
-	// Start sets s.listener itself; wait until the port is really taken.
-	for i := 0; i < 50; i++ {
-		c, err := net.ListenUDP("udp", srv)
-		if err != nil {
-			break
-		}
-		c.Close()
-		time.Sleep(20 * time.Millisecond)
-	}
 	to := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
 	sock := func() *net.UDPConn {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -158,14 +148,22 @@ func TestListenLoopEndToEnd(t *testing.T) {
 	}
 	provider, visitor, stranger := sock(), sock(), sock()
 
-	stranger.WriteTo([]byte(packet("guess", common.WORK_P2P_VISITOR)), to)
-	provider.WriteTo([]byte(packet("secret", common.WORK_P2P_PROVIDER)), to)
-	time.Sleep(100 * time.Millisecond)
-	visitor.WriteTo([]byte(packet("secret", common.WORK_P2P_VISITOR)), to)
-
+	// Start binds its port on its own schedule, and probing the port to see
+	// whether it is up would race it for the bind, so just try again until the
+	// server answers. Registering twice is harmless.
 	buf := make([]byte, 64)
-	visitor.SetReadDeadline(time.Now().Add(3 * time.Second))
-	n, _, err := visitor.ReadFromUDP(buf)
+	var n int
+	var err error
+	for try := 0; try < 10; try++ {
+		stranger.WriteTo([]byte(packet("guess", common.WORK_P2P_VISITOR)), to)
+		provider.WriteTo([]byte(packet("secret", common.WORK_P2P_PROVIDER)), to)
+		time.Sleep(100 * time.Millisecond)
+		visitor.WriteTo([]byte(packet("secret", common.WORK_P2P_VISITOR)), to)
+		visitor.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		if n, _, err = visitor.ReadFromUDP(buf); err == nil {
+			break
+		}
+	}
 	if err != nil || string(buf[:n]) != provider.LocalAddr().String() {
 		t.Fatalf("visitor got %q, %v; want the provider's address", buf[:n], err)
 	}
