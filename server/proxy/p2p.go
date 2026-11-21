@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ehang.io/nps/lib/common"
+	"ehang.io/nps/lib/crypt"
 	"ehang.io/nps/lib/file"
 	"github.com/astaxie/beego/logs"
 )
@@ -29,24 +30,68 @@ type P2PServer struct {
 	// test can stand in for the tunnel database.
 	known func(md5 string) bool
 
+	visitorWait int // seconds; a field so a test need not wait them out
+
 	dropped    int64 // packets refused since the last report
 	lastReport int64 // unix seconds
 }
 
 type p2p struct {
-	visitorAddr  *net.UDPAddr
 	providerAddr *net.UDPAddr
+	providerAt   time.Time
 }
+
+// providerTTL is how long a provider's registration is believed. The provider
+// registers when a visitor asks, and its client gives up after 15s, so an older
+// one has most likely gone and its address would only send the visitor to
+// nowhere.
+const providerTTL = 30 * time.Second
+
+// defaultVisitorWait is how many seconds a visitor waits for its provider to
+// register.
+const defaultVisitorWait = 20
+
+// knownTTL is how long the set of p2p passwords is reused. Checking a packet
+// against the tunnel table costs an md5 per tunnel, which a flood must not be
+// able to make the read loop pay for every packet.
+const knownTTL = 2 * time.Second
+
+// p2pKnown is shared by the servers on the three ports, which see the same
+// packets and would each rebuild the same set.
+var p2pKnown p2pPasswords
 
 func NewP2PServer(p2pPort int) *P2PServer {
 	return &P2PServer{
 		p2pPort: p2pPort,
 		p2p:     make(map[string]*p2p),
-		known: func(md5 string) bool {
-			t := file.GetDb().GetTaskByMd5Password(md5)
-			return t != nil && t.Mode == "p2p"
-		},
+		known:   p2pKnown.has,
+
+		visitorWait: defaultVisitorWait,
 	}
+}
+
+// p2pPasswords is the set of md5 passwords of the p2p tunnels, rebuilt at most
+// every knownTTL.
+type p2pPasswords struct {
+	mu    sync.Mutex
+	at    time.Time
+	known map[string]bool
+}
+
+func (c *p2pPasswords) has(md5 string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.known == nil || time.Since(c.at) > knownTTL {
+		set := make(map[string]bool)
+		file.GetDb().JsonDb.Tasks.Range(func(_, value interface{}) bool {
+			if t := value.(*file.Tunnel); t.Mode == "p2p" {
+				set[crypt.Md5(t.Password)] = true
+			}
+			return true
+		})
+		c.known, c.at = set, time.Now()
+	}
+	return c.known[md5]
 }
 
 func (s *P2PServer) Start() error {
@@ -60,9 +105,12 @@ func (s *P2PServer) Start() error {
 		buf := common.BufPoolUdp.Get().([]byte)
 		n, addr, err := s.listener.ReadFromUDP(buf)
 		if err != nil {
+			common.PutBufPoolUdp(buf)
 			if strings.Contains(err.Error(), "use of closed network connection") {
 				break
 			}
+			// a persistent error must not spin the loop
+			time.Sleep(10 * time.Millisecond)
 			continue
 		}
 		str := string(buf[:n])
@@ -125,19 +173,20 @@ func (s *P2PServer) handleP2P(addr *net.UDPAddr, pw, role string) {
 		v = new(p2p)
 		s.p2p[pw] = v
 	}
-	if role == common.WORK_P2P_VISITOR {
-		v.visitorAddr = addr
-	} else {
-		v.providerAddr = addr
+	if role != common.WORK_P2P_VISITOR {
+		v.providerAddr, v.providerAt = addr, time.Now()
 	}
 	s.mu.Unlock()
 	logs.Trace("new p2p connection ,role %s ,local address %s", role, addr.String())
 	if role != common.WORK_P2P_VISITOR {
 		return
 	}
-	for i := 20; i > 0; i-- {
+	for i := s.visitorWait; i > 0; i-- {
 		s.mu.Lock()
 		provider := v.providerAddr
+		if provider != nil && time.Since(v.providerAt) > providerTTL {
+			provider = nil // registered long ago, most likely gone
+		}
 		s.mu.Unlock()
 		if provider != nil {
 			s.listener.WriteTo([]byte(provider.String()), addr)

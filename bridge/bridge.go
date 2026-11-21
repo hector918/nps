@@ -397,18 +397,27 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		}
 	case common.WORK_P2P:
 		//read md5 secret
+		// Every refusal closes the connection: the visitor waits for the
+		// reply with no deadline and would otherwise wait for good, holding a
+		// lock that every later p2p attempt of that process queues behind.
 		if b, err := c.GetShortContent(32); err != nil {
 			logs.Error("p2p error,", err.Error())
+			c.Close()
+			return
 		} else if t := file.GetDb().GetTaskByMd5Password(string(b)); t == nil {
 			logs.Error("p2p error, failed to match the key successfully")
+			c.Close()
+			return
 		} else {
 			if v, ok := s.Client.Load(t.Client.Id); !ok {
+				c.Close()
 				return
 			} else {
 				// With either unset the address below would be "ip:" or ":port",
 				// which the client can only fail on, far from the cause.
 				if beego.AppConfig.String("p2p_ip") == "" || beego.AppConfig.String("p2p_port") == "" {
 					logs.Error("p2p is not set up on this server: set p2p_ip and p2p_port in nps.conf and open UDP p2p_port to p2p_port+2")
+					c.Close()
 					return
 				}
 				svrAddr := beego.AppConfig.String("p2p_ip") + ":" + beego.AppConfig.String("p2p_port")

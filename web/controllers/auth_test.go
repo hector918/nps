@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"testing"
 
+	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/crypt"
 )
 
@@ -38,7 +39,7 @@ func TestAuthKeyServable(t *testing.T) {
 		want                    bool
 	}{
 		{"nothing to hand out", "", "abcdefghijklmnop", false},
-		{"shipped crypt key", "s3cret", defaultAuthCryptKey, false},
+		{"shipped crypt key", "s3cret", common.DefaultAuthCryptKey, false},
 		{"crypt key the wrong length", "s3cret", "short", false},
 		{"configured", "s3cret", "abcdefghijklmnop", true},
 	} {

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"ehang.io/nps/bridge"
+	"ehang.io/nps/lib/common"
 	"github.com/astaxie/beego"
 	"github.com/astaxie/beego/logs"
 )
@@ -40,7 +41,7 @@ func UnsafeConfig(get func(string) string) []ConfigWarning {
 		if len(k) < minPublicVkeyLen || guessable[strings.ToLower(k)] {
 			out = append(out, ConfigWarning{"auth-key", "auth_key is set and can be guessed: it logs anyone who has it in to the web API as admin. Use 16 or more random characters, or empty it in nps.conf."})
 		}
-		if get("auth_crypt_key") == "1234567812345678" {
+		if get("auth_crypt_key") == common.DefaultAuthCryptKey {
 			out = append(out, ConfigWarning{"auth-crypt-key", "auth_crypt_key is still the value nps.conf ships with, so /auth/getauthkey is switched off: it would hand the auth_key to anyone, who could decrypt it with that public key. Set auth_crypt_key to 16 random characters to turn it back on."})
 		}
 	}

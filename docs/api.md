@@ -1,6 +1,6 @@
 # web api
 
-需要开启请先去掉`nps.conf`中`auth_key`的注释并配置一个合适的密钥
+需要开启请先去掉`nps.conf`中`auth_key`的注释并配置一个合适的密钥（16 位以上的随机字符）。**`auth_key` 为空时这种登录是关闭的**，旧版本在为空时任何人都能算出有效的 `auth_key`，从而不用密码就拿到管理员权限。
 ## webAPI验证说明
 - 采用auth_key的验证方式
 - 在提交的每个请求后面附带两个参数，`auth_key` 和`timestamp`
@@ -35,7 +35,7 @@ POST /auth/getauthkey
 ```
 将返回加密后的authKey，采用aes cbc加密，请使用与服务端配置文件中cryptKey相同的密钥进行解密
 
-**注意：** nps配置文件中`auth_crypt_key`需为16位
+**注意：** nps配置文件中`auth_crypt_key`需为16位，并且不能是 `nps.conf` 自带的默认值 `1234567812345678`（它是公开的，任何人都能用它解开返回的密文）。`auth_key` 为空，或 `auth_crypt_key` 还是默认值时，这个接口返回 `{"status":0}`。
 - 解密密钥长度128
 - 偏移量与密钥相同
 - 补码方式pkcs5padding

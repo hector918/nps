@@ -4,19 +4,18 @@ import (
 	"encoding/hex"
 	"time"
 
+	"ehang.io/nps/lib/common"
 	"ehang.io/nps/lib/crypt"
 	"github.com/astaxie/beego"
+	"github.com/astaxie/beego/logs"
 )
-
-// defaultAuthCryptKey is the auth_crypt_key nps.conf ships with. It is public.
-const defaultAuthCryptKey = "1234567812345678"
 
 // authKeyServable says whether /auth/getauthkey may hand out the auth_key. It
 // needs no login, so the encryption is all that protects the key: with an empty
 // auth_key there is nothing to hand out, and with the shipped auth_crypt_key
 // anyone can decrypt the answer.
 func authKeyServable(authKey, cryptKey string) bool {
-	return authKey != "" && len(cryptKey) == 16 && cryptKey != defaultAuthCryptKey
+	return authKey != "" && len(cryptKey) == 16 && cryptKey != common.DefaultAuthCryptKey
 }
 
 type AuthController struct {
@@ -30,6 +29,7 @@ func (s *AuthController) GetAuthKey() {
 		s.ServeJSON()
 	}()
 	if cryptKey := beego.AppConfig.String("auth_crypt_key"); !authKeyServable(beego.AppConfig.String("auth_key"), cryptKey) {
+		logs.Warn("/auth/getauthkey refused: it needs auth_key set and auth_crypt_key changed from the value nps.conf ships with")
 		m["status"] = 0
 		return
 	} else {

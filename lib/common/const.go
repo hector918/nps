@@ -50,3 +50,6 @@ const (
 	SecretLinkPingEvery = time.Second
 	SecretLinkPingCheck = 5
 )
+
+// DefaultAuthCryptKey is the auth_crypt_key nps.conf ships with. It is public.
+const DefaultAuthCryptKey = "1234567812345678"

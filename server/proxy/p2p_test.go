@@ -174,3 +174,26 @@ func TestListenLoopEndToEnd(t *testing.T) {
 		t.Fatalf("a stranger with an unknown password got a reply: %q", buf[:n])
 	}
 }
+
+// A provider that registered long ago has most likely gone: a visitor must not
+// be handed its address.
+func TestStaleProviderIsNotHandedOut(t *testing.T) {
+	s := newTestServer(t, "secret")
+	s.visitorWait = 2
+	pw := crypt.Md5("secret")
+	stale := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}
+	s.p2p[pw] = &p2p{providerAddr: stale, providerAt: time.Now().Add(-2 * providerTTL)}
+
+	visitor, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer visitor.Close()
+	s.handleP2P(visitor.LocalAddr().(*net.UDPAddr), pw, common.WORK_P2P_VISITOR)
+
+	visitor.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	buf := make([]byte, 64)
+	if n, _, err := visitor.ReadFromUDP(buf); err == nil {
+		t.Fatalf("the visitor was told %q, the address of a provider that registered long ago", buf[:n])
+	}
+}
