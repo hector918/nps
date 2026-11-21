@@ -39,6 +39,7 @@ FILES=(
     README.md
     README_zh.md
     deploy/update.sh
+    deploy/install.sh
     deploy/docker/README.md
     deploy/docker/Dockerfile.npc
     deploy/docker/Dockerfile.nps

@@ -34,6 +34,14 @@ NPS is a lightweight, high-performance, powerful **intranet penetration** proxy 
 
 Download the corresponding system version, the server and client are separate.
 
+On a fresh host, install the client (download, verify, register as a systemd service, start):
+
+```sh
+curl -fsSL https://github.com/hector918/nps/releases/latest/download/install.sh | sudo bash -s -- --server your.nps.host:8024 --vkey YOUR_VKEY
+```
+
+A host that already has npc is refused; upgrade it with the update command below.
+
 Or update a node that is already running. This replaces the binary, and on a
 server also the web UI in `web/views` and `web/static` -- the service unit and
 the config are left alone, so it makes no difference whether the node was

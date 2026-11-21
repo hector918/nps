@@ -41,6 +41,14 @@ nps是一款轻量级、高性能、功能强大的**内网穿透**代理服务�
 
 下载对应的系统版本即可，服务端和客户端是单独的
 
+全新机器上安装客户端(下载、校验、注册为 systemd 服务并启动):
+
+```sh
+curl -fsSL https://github.com/hector918/nps/releases/latest/download/install.sh | sudo bash -s -- --server 你的nps地址:8024 --vkey 你的vkey
+```
+
+已经装过 npc 的机器会被拒绝,升级请用下面的更新命令。
+
 或者更新一台已经在跑的节点。它替换二进制，服务端还会一并替换 `web/views` 和
 `web/static` 里的管理页面；service 文件和配置一律不动，所以参数启动和配置文件
 启动都适用；替换后等节点恢复，起不来就自动回滚：
